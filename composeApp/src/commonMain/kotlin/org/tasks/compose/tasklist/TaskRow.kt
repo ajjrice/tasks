@@ -31,6 +31,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
@@ -78,6 +79,7 @@ internal fun rowState(deletions: Map<String, Boolean>, task: TaskContainer): Row
     }
 
 internal const val COMPLETE_BUTTON_TAG = "task-row-complete"
+internal const val ROW_TEST_TAG = "task_row_"
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -96,6 +98,7 @@ internal fun TaskRow(
     onFilterClick: (Filter) -> Unit,
     dragHandle: (@Composable (Modifier) -> Unit)? = null,
     dragged: Boolean = false,
+    dragIndentOffset: Dp = 0.dp,
 ) {
     val isDark = isDarkTheme()
     val checkColor = if (task.isCompleted) {
@@ -107,18 +110,23 @@ internal fun TaskRow(
     // the shape morph and the radio-button semantics; `enabled = false` renders a doomed
     // (deleted) row as a disabled item instead of a custom error background. A dragged row
     // takes the elevated surface so the item clearly lifts out of the list.
+    // [dragIndentOffset] is the animated mid-drag indent shift (the native app's "about
+    // to become a subtask" cue): positive = will indent, negative = will outdent.
+    // The clamp keeps the padding non-negative if the offset ever lags a commit
+    // (a top-level row with a stale negative offset must not assert the layout).
+    val indentStart = ((INDENT_STEP_DP * task.indent).dp + dragIndentOffset).coerceAtLeast(0.dp)
     ListItem(
         selected = selected,
         enabled = !doomed,
         onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = (INDENT_STEP_DP * task.indent).dp)
+            .testTag(ROW_TEST_TAG + task.id)
+            .padding(start = indentStart)
             .then(
-                if (dragged) {
-                    Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                } else {
-                    Modifier
+                when {
+                    dragged -> Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                    else -> Modifier
                 },
             ),
         contentPadding = PaddingValues(
