@@ -73,6 +73,8 @@ class TaskRowSelectionTest {
                     onToggleComplete = {},
                     onToggleSubtasks = {},
                     onFilterClick = {},
+                    descriptionExpanded = false,
+                    onToggleDescriptionExpanded = {},
                 )
                 TaskRow(
                     task = task(2, secondTitle),
@@ -87,6 +89,8 @@ class TaskRowSelectionTest {
                     onToggleComplete = {},
                     onToggleSubtasks = {},
                     onFilterClick = {},
+                    descriptionExpanded = false,
+                    onToggleDescriptionExpanded = {},
                 )
             }
         }
@@ -128,6 +132,8 @@ class TaskRowSelectionTest {
                     onToggleComplete = {},
                     onToggleSubtasks = {},
                     onFilterClick = {},
+                    descriptionExpanded = false,
+                    onToggleDescriptionExpanded = {},
                 )
             }
         }

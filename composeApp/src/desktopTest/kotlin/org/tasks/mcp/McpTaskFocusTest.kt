@@ -160,6 +160,7 @@ class McpTaskFocusTest : McpGraphTestCase() {
                 token = { TOKEN },
                 permissions = permissions,
                 api = api,
+                filters = filtersApi,
                 log = ActivityLog(),
                 onStateChange = { _, _ -> },
                 requests = koin.get<org.tasks.TaskRequests>(),
