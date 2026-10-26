@@ -3046,6 +3046,13 @@ private fun SettingsScreen(
                             },
                         )
                     }
+                    is org.tasks.compose.settings.SettingsDestination.Backups -> {
+                        org.tasks.compose.settings.BackupsDetail(
+                            onNavigateBack = {
+                                scope.launch { navigator.navigateBack() }
+                            },
+                        )
+                    }
                     is org.tasks.compose.settings.SettingsDestination.WorksWith -> {
                         WorksWithDetail(
                             onNavigateBack = {

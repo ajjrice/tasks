@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.flowOf
 import org.koin.core.module.Module
 import org.koin.core.module.dsl.factoryOf
 import org.koin.core.module.dsl.singleOf
+import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.bind
 import org.koin.dsl.module
 import org.tasks.PlatformConfiguration
@@ -28,6 +29,10 @@ import org.tasks.auth.DesktopSignInHandler
 import org.tasks.auth.OAuthFlow
 import org.tasks.auth.SignInHandler
 import org.tasks.auth.TasksOAuthClient
+import org.tasks.backup.BackupFiles
+import org.tasks.backup.DesktopBackupFiles
+import org.tasks.backup.LocalBackupExporter
+import org.tasks.backup.LocalBackupImporter
 import org.tasks.billing.BillingProvider
 import org.tasks.billing.PurchaseEntitlement
 import org.tasks.billing.DesktopLinkClient
@@ -72,6 +77,7 @@ import org.tasks.service.TaskCleanup
 import org.tasks.service.Upgrader
 import org.tasks.sse.SseClient
 import org.tasks.sse.SseTokenProvider
+import org.tasks.viewmodel.BackupsViewModel
 import org.tasks.sync.microsoft.DesktopMicrosoftClientProvider
 import org.tasks.sync.microsoft.MicrosoftClientProvider
 import org.tasks.sync.microsoft.MicrosoftSynchronizer
@@ -466,6 +472,31 @@ actual fun platformModule(): Module = module {
             alarmService = alarmService::value,
             trigger = { get<DesktopNotifier>().triggerNotifications(it) },
             hold = { get<DesktopNotifier>().hold() },
+        )
+    }
+    single<BackupFiles> { DesktopBackupFiles() }
+    factory {
+        LocalBackupExporter(
+            database = get(),
+            vtodoCache = get(),
+        )
+    }
+    factory {
+        LocalBackupImporter(
+            database = get(),
+            taskSaver = get(),
+            taskMover = get(),
+            vtodoCache = get(),
+            refreshBroadcaster = get(),
+        )
+    }
+    viewModel {
+        BackupsViewModel(
+            tasksPreferences = get(),
+            exporter = get(),
+            importer = get(),
+            backupFiles = get(),
+            versionCode = { get<PlatformConfiguration>().versionCode },
         )
     }
 }

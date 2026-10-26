@@ -108,6 +108,12 @@ class TasksPreferences(private val dataStore: DataStore<Preferences>) {
         val metadataRev = stringPreferencesKey("metadata_rev")
         val metadataOrderDirty = booleanPreferencesKey("metadata_order_dirty")
         val datePickerInputMode = booleanPreferencesKey("date_picker_input_mode")
+        // Backup keys mirror the Android app (p_* names) so both platforms
+        // understand each other's configured state.
+        val backupsEnabled = booleanPreferencesKey("p_backups_enabled")
+        val lastLocalBackup = longPreferencesKey("p_last_backup")
+        val backupsIgnoreWarnings = booleanPreferencesKey("p_backups_ignore_warnings")
+        val backupDir = stringPreferencesKey("p_backup_dir")
         val timePickerInputMode = booleanPreferencesKey("time_picker_input_mode")
         val persistentNotifications = booleanPreferencesKey("persistent_notifications")
         val wearableNotifications = booleanPreferencesKey("wearable_notifications")
