@@ -20,7 +20,9 @@ import org.koin.core.context.stopKoin
 import org.koin.core.module.Module
 import org.koin.dsl.module
 import org.tasks.compose.chips.ChipDataProvider
+import org.tasks.InMemoryDataStore
 import org.tasks.data.SubtaskTreeRegistry
+import org.tasks.preferences.TasksPreferences
 import org.tasks.data.TaskContainer
 import org.tasks.data.entity.Task
 import org.tasks.filters.CaldavListCache
@@ -109,7 +111,14 @@ class DragReorderUiTest {
     }
 
     private fun runWithKoin(block: () -> Unit) {
-        startKoin { modules(module { single { SubtaskTreeRegistry() } }) }
+        startKoin {
+            modules(
+                module {
+                    single { SubtaskTreeRegistry() }
+                    single { TasksPreferences(InMemoryDataStore()) }
+                }
+            )
+        }
         try {
             block()
         } finally {

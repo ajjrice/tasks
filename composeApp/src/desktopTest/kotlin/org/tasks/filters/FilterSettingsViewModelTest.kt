@@ -1,7 +1,9 @@
 package org.tasks.filters
 
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
@@ -29,24 +31,37 @@ class FilterSettingsViewModelTest : DatabaseTest() {
     private val taskDao = db.taskDao()
     private val provider = FilterCriteriaProvider(db.tagDataDao(), db.caldavDao())
 
+    // The VM's viewModelScope launches count queries that resume off the test thread;
+    // closing each VM cancels those before DatabaseTest closes the db, so no "Database is
+    // closed" exception leaks into the next test class (or aborts the worker at shutdown).
+    private val viewModels = mutableListOf<FilterSettingsViewModel>()
+
     @Before
     fun setUp() = Dispatchers.setMain(Dispatchers.Unconfined)
 
     @After
-    fun tearDown() = Dispatchers.resetMain()
+    fun tearDown() {
+        viewModels.forEach { it.viewModelScope.cancel() }
+        viewModels.clear()
+        Dispatchers.resetMain()
+    }
 
     private fun viewModel(
         initialFilter: Filter? = null,
         templateIndex: Int? = null,
-    ) = FilterSettingsViewModel(
-        filterCriteriaProvider = provider,
-        filterDao = filterDao,
-        taskDao = taskDao,
-        purchaseState = mock<PurchaseState>(),
-        isDark = false,
-        initialFilter = initialFilter,
-        templateIndex = templateIndex,
-    )
+    ): FilterSettingsViewModel {
+        val vm = FilterSettingsViewModel(
+            filterCriteriaProvider = provider,
+            filterDao = filterDao,
+            taskDao = taskDao,
+            purchaseState = mock<PurchaseState>(),
+            isDark = false,
+            initialFilter = initialFilter,
+            templateIndex = templateIndex,
+        )
+        viewModels.add(vm)
+        return vm
+    }
 
     private suspend fun waitForCriteria(
         vm: FilterSettingsViewModel,
