@@ -47,6 +47,7 @@ private data class FilterEditorSession(
 @Composable
 fun NavigationDrawerDetail(
     onNavigateBack: () -> Unit,
+    onCustomizeDrawer: (() -> Unit)? = null,
 ) {
     val viewModel = koinViewModel<NavigationDrawerViewModel>()
     val refreshBroadcaster = koinInject<RefreshBroadcaster>()
@@ -102,6 +103,7 @@ fun NavigationDrawerDetail(
         ) {
             NavigationDrawerContent(
                 viewModel = viewModel,
+                onCustomizeDrawer = onCustomizeDrawer,
                 filterSection = {
                     CustomFilterSection(
                         refreshKey = listTick,
