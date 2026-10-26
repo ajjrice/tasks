@@ -123,6 +123,7 @@ import co.touchlab.kermit.Logger
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -625,6 +626,46 @@ fun App(
                 }
             }
 
+            // Track the filter before search activates, so we can restore it when search deactivates.
+            var previousFilter by remember { mutableStateOf<Filter?>(null) }
+            // Track sidebar search FAB collapse (hoisted for access in search wiring LaunchedEffect)
+            var sidebarSearchCollapsed by remember { mutableStateOf(false) }
+
+            // Wire drawer search query to task list view model.
+            // The drawer's menuQuery is the single source of truth for the search text.
+            // When it transitions empty->non-empty, we save the current filter as previousFilter.
+            // When it transitions non-empty->empty AND the search UI collapses (modal drawer closes
+            // or sidebar collapses or sidebar search FAB collapses), we restore previousFilter and clear the search query.
+            LaunchedEffect(taskListViewModel, drawerViewModel, materialDrawerState, sidebarShownExpanded) {
+                if (taskListViewModel == null || drawerViewModel == null) return@LaunchedEffect
+                var wasSearchActive = false
+                drawerViewModel.state
+                    .map { it.menuQuery }
+                    .distinctUntilChanged()
+                    .collect { query: String ->
+                        val isSearchActive = query.isNotBlank()
+                        // Search activation: empty -> non-empty
+                        if (!wasSearchActive && isSearchActive) {
+                            previousFilter = taskListViewModel.state.value.filter
+                        }
+                        // Search deactivation: non-empty -> empty AND search UI collapsed
+                        val searchUICollapsed = !materialDrawerState.isOpen
+                            || !sidebarShownExpanded
+                            || sidebarSearchCollapsed
+                        if (wasSearchActive && !isSearchActive && searchUICollapsed) {
+                            previousFilter?.let { filter ->
+                                taskListViewModel.setFilter(filter)
+                                taskListViewModel.setSearchQuery(null)
+                            }
+                            previousFilter = null
+                            sidebarSearchCollapsed = false
+                        }
+                        wasSearchActive = isSearchActive
+                        // Always propagate query to task list view model
+                        taskListViewModel.setSearchQuery(query)
+                    }
+            }
+
             fun closeDetail() {
                 if (backStack.lastOrNull() is TaskEditDestination) {
                     backStack.removeLastOrNull()
@@ -844,6 +885,7 @@ fun App(
                 visible = showChrome,
                 onDrawerItemClick = onDrawerItemClick,
                 onAddClick = onAddClick,
+                onSidebarSearchCollapse = { sidebarSearchCollapsed = true },
             ) {
             NavDisplay(
                 backStack = backStack,
@@ -1614,6 +1656,7 @@ private fun TaskListChrome(
     onDrawerItemClick: (DrawerItem) -> Unit,
     onAddClick: (DrawerItem.Header) -> Unit,
     onCloudSignIn: () -> Unit,
+    onSidebarSearchCollapse: () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -1714,6 +1757,7 @@ private fun TaskListChrome(
                                 scope.launch { materialDrawerState.open() }
                             }
                         },
+                        onSearchCollapse = onSidebarSearchCollapse,
                         listState = sidebarListState,
                         searchButtonInset = SearchButtonInset,
                     )
