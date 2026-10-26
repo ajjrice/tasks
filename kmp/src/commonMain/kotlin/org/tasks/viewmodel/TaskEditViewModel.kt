@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.datetime.Clock
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -79,6 +80,7 @@ import org.tasks.data.entity.CaldavTask
 import org.tasks.data.entity.SYNC_ALARMS
 import org.tasks.data.entity.SYNC_TAGS
 import org.tasks.data.entity.TagData
+import org.tasks.timer.TimerLog
 import org.tasks.data.entity.Task
 import org.tasks.filters.CaldavFilter
 import org.tasks.preferences.AppPreferences
@@ -877,6 +879,74 @@ class TaskEditViewModel(
     fun setDescription(description: String) {
         _state.update { it.copy(task = it.task.copy(notes = description)) }
     }
+
+    /**
+     * Starts the task timer: records an open session in the timer log
+     * (the source of truth for the X-TASKS-TIMER wire property) and caches
+     * its start in timerStart for display. No-op when a session is already
+     * running. Persisted immediately so a running timer survives the editor
+     * being closed or the process dying.
+     */
+    fun startTimer() {
+        val now = Clock.System.now()
+        _state.update { state ->
+            val task = state.task
+            if (task.timerStart > 0) {
+                state
+            } else {
+                val log = baseLog(task)
+                state.copy(
+                    task = task.copy(
+                        timerLog = TimerLog.appendStart(log, now),
+                        timerStart = now.toEpochMilliseconds(),
+                    ),
+                )
+            }
+        }
+        persistCurrentTask()
+    }
+
+    /**
+     * Stops the running session: banks its duration into elapsedSeconds,
+     * clears timerStart and closes the open log line. No-op when nothing is
+     * running. Persisted immediately for the same reason as [startTimer].
+     */
+    fun stopTimer() {
+        val now = Clock.System.now()
+        _state.update { state ->
+            val task = state.task
+            if (task.timerStart <= 0) {
+                state
+            } else {
+                val seconds = ((now.toEpochMilliseconds() - task.timerStart) / 1000L).toInt()
+                state.copy(
+                    task = task.copy(
+                        timerLog = TimerLog.closeOpenLine(task.timerLog, now, seconds),
+                        timerStart = 0L,
+                        elapsedSeconds = task.elapsedSeconds + seconds,
+                    ),
+                )
+            }
+        }
+        persistCurrentTask()
+    }
+
+    /** Sets the estimate in seconds; 0 clears it. Saved with the normal close. */
+    fun setEstimate(seconds: Int) {
+        _state.update { it.copy(task = it.task.copy(estimatedSeconds = seconds.coerceAtLeast(0))) }
+    }
+
+    /**
+     * Synthesizes the log for legacy rows that have timer columns but no
+     * log, so that a first timer event keeps the previously banked time
+     * visible on the wire.
+     */
+    private fun baseLog(task: Task): String =
+        if (task.timerLog.isBlank()) {
+            TimerLog.synthesizeLegacy(task.elapsedSeconds, task.timerStart)
+        } else {
+            task.timerLog
+        }
 
     fun setPriority(priority: Int) {
         _state.update { it.copy(task = it.task.copy(priority = priority)) }

@@ -30,6 +30,7 @@ internal fun TaskEditViewModel.State.mergedWith(dbTask: Task): TaskEditViewModel
         estimatedSeconds = merge(current.estimatedSeconds, original.estimatedSeconds, dbTask.estimatedSeconds),
         elapsedSeconds = merge(current.elapsedSeconds, original.elapsedSeconds, dbTask.elapsedSeconds),
         timerStart = merge(current.timerStart, original.timerStart, dbTask.timerStart),
+        timerLog = merge(current.timerLog, original.timerLog, dbTask.timerLog),
         ringFlags = merge(current.ringFlags, original.ringFlags, dbTask.ringFlags),
         recurrence = merge(current.recurrence, original.recurrence, dbTask.recurrence),
         repeatFrom = merge(current.repeatFrom, original.repeatFrom, dbTask.repeatFrom),

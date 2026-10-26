@@ -704,4 +704,8 @@
     <string name="reset_trusted_certificates">Reset trusted certificates</string>
     <string name="reset_trusted_certificates_summary">Forget certificates and certificate authorities you accepted for servers</string>
     <string name="trusted_certificates_reset">Trusted certificates reset</string>
+    <string name="estimated_time">Estimated time</string>
+    <string name="no_estimate">Unset</string>
+    <string name="timer">Timer</string>
+    <string name="invalid_duration">Invalid duration</string>
 </resources>

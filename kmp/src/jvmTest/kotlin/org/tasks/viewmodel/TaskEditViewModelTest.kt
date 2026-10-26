@@ -42,6 +42,7 @@ import org.tasks.data.entity.SYNC_TAGS
 import org.tasks.data.entity.TagData
 import org.tasks.data.entity.CaldavTask
 import org.tasks.data.entity.Task
+import org.tasks.timer.TimerLog
 import org.tasks.preferences.TaskDefaultSettings
 import org.tasks.compose.pickers.DAY_BEFORE_DUE
 import org.tasks.compose.pickers.DUE_DATE
@@ -62,7 +63,7 @@ import org.tasks.time.withMillisOfDay
 class TaskEditViewModelTest : TaskEditViewModelFixture() {
     private val mergedFields = setOf(
         "title", "priority", "dueDate", "hideUntil", "completionDate", "deletionDate", "notes",
-        "estimatedSeconds", "elapsedSeconds", "timerStart", "ringFlags", "recurrence", "repeatFrom",
+        "estimatedSeconds", "elapsedSeconds", "timerStart", "timerLog", "ringFlags", "recurrence", "repeatFrom",
         "calendarURI", "isCollapsed", "parent", "order", "readOnly", "modificationDate", "reminderLast",
         "reminderDismissed",
     )
@@ -1181,6 +1182,7 @@ class TaskEditViewModelTest : TaskEditViewModelFixture() {
             estimatedSeconds = 600,
             elapsedSeconds = 700,
             timerStart = 800L,
+            timerLog = "started this task: 2026-10-26T14:32:05+01:00",
             ringFlags = 1,
             reminderLast = 900L,
             reminderDismissed = 950L,
@@ -3001,4 +3003,108 @@ class TaskEditViewModelTest : TaskEditViewModelFixture() {
         assertFalse(viewModel.state.value.isLoading)
         assertEquals(0L, viewModel.state.value.task.dueDate)
     }
+
+    // region timer
+
+    @Test
+    fun startTimerOpensASessionAndPersists() = runTest(testDispatcher) {
+        initializeExisting()
+
+        viewModel.startTimer()
+        val task = viewModel.state.value.task
+        assertTrue(task.timerStart > 0)
+        val parsed = TimerLog.parse(task.timerLog)
+        assertTrue(parsed.hasOpenSession)
+        // The log is second-precision; the column keeps the millisecond start.
+        assertEquals(task.timerStart / 1000L * 1000L, parsed.timerStart)
+
+        advanceUntilIdle()
+        verify(taskSaver).save(
+            check {
+                assertTrue(it.timerStart > 0)
+                assertTrue(it.timerLog.contains(TimerLog.START_MARKER))
+            },
+            any(),
+            any(),
+            any(),
+        )
+    }
+
+    @Test
+    fun startTimerWhileRunningIsANoOp() = runTest(testDispatcher) {
+        initializeExisting()
+
+        viewModel.startTimer()
+        val log = viewModel.state.value.task.timerLog
+        val start = viewModel.state.value.task.timerStart
+
+        viewModel.startTimer()
+
+        assertEquals(log, viewModel.state.value.task.timerLog)
+        assertEquals(start, viewModel.state.value.task.timerStart)
+    }
+
+    @Test
+    fun stopTimerBanksTheOpenSession() = runTest(testDispatcher) {
+        initializeExisting()
+
+        viewModel.startTimer()
+        viewModel.stopTimer()
+
+        val task = viewModel.state.value.task
+        assertEquals(0L, task.timerStart)
+        val parsed = TimerLog.parse(task.timerLog)
+        assertFalse(parsed.hasOpenSession)
+        assertTrue(parsed.malformed.isEmpty())
+        assertEquals(parsed.elapsedSeconds, task.elapsedSeconds)
+    }
+
+    @Test
+    fun stopTimerWhenNotRunningIsANoOp() = runTest(testDispatcher) {
+        initializeExisting()
+
+        viewModel.stopTimer()
+
+        assertEquals(0L, viewModel.state.value.task.timerStart)
+        assertEquals("", viewModel.state.value.task.timerLog)
+        assertEquals(0, viewModel.state.value.task.elapsedSeconds)
+    }
+
+    @Test
+    fun startTimerSynthesizesLegacyBankedTimeIntoTheLog() = runTest(testDispatcher) {
+        whenever(taskDao.fetch(42L)).thenReturn(Task(id = 42, title = "Legacy", elapsedSeconds = 900))
+        whenever(caldavDao.getTask(42L)).thenReturn(null)
+        buildViewModel(taskId = 42)
+        advanceUntilIdle()
+
+        viewModel.startTimer()
+
+        val log = viewModel.state.value.task.timerLog
+        val parsed = TimerLog.parse(log)
+        assertEquals(900, parsed.elapsedSeconds)
+        assertTrue(parsed.hasOpenSession)
+        assertTrue("expected legacy banked line in log: $log", log.contains("== 900s"))
+    }
+
+    @Test
+    fun setEstimateStoresSecondsAndZeroClears() = runTest(testDispatcher) {
+        initializeExisting()
+
+        viewModel.setEstimate(5400)
+        assertEquals(5400, viewModel.state.value.task.estimatedSeconds)
+
+        viewModel.setEstimate(0)
+        assertEquals(0, viewModel.state.value.task.estimatedSeconds)
+    }
+
+    @Test
+    fun setEstimateNeverGoesNegative() = runTest(testDispatcher) {
+        initializeExisting()
+
+        viewModel.setEstimate(-5)
+
+        assertEquals(0, viewModel.state.value.task.estimatedSeconds)
+    }
+
+    // endregion
 }

@@ -64,6 +64,14 @@ data class Task @OptIn(ExperimentalSerializationApi::class) constructor(
     var elapsedSeconds: Int = 0,
     @ColumnInfo(name = "timerStart")
     var timerStart: Long = 0L,
+    /**
+     * Append-only timer session log (see TimerLog), synced as the
+     * X-TASKS-TIMER VTODO property. The timerStart/elapsedSeconds
+     * columns above are the derived cache for display.
+     */
+    @Redacted
+    @ColumnInfo(name = "timerLog", defaultValue = "")
+    var timerLog: String = "",
     @ColumnInfo(name = "notificationFlags")
     @SerialName("ringFlags")
     @JsonNames("reminderFlags")
@@ -195,6 +203,8 @@ data class Task @OptIn(ExperimentalSerializationApi::class) constructor(
                 && parent == original.parent
                 && isCollapsed == original.isCollapsed
                 && order == original.order
+                && timerLog == original.timerLog
+                && estimatedSeconds == original.estimatedSeconds
     }
 
     fun microsoftUpToDate(original: Task?): Boolean {
@@ -299,6 +309,7 @@ data class Task @OptIn(ExperimentalSerializationApi::class) constructor(
         val DELETION_DATE = TABLE.column("deleted")
         val NOTES = TABLE.column("notes")
         val TIMER_START = TABLE.column("timerStart")
+        val TIMER_LOG = TABLE.column("timerLog")
         val PARENT = TABLE.column("parent")
         val RECURRENCE = TABLE.column("recurrence")
 

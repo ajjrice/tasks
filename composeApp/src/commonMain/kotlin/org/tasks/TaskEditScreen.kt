@@ -47,6 +47,7 @@ import org.tasks.compose.edit.DeleteTaskDialog
 import org.tasks.compose.edit.DescriptionRow
 import org.tasks.compose.edit.DiscardChangesDialog
 import org.tasks.compose.edit.DueDateRow
+import org.tasks.compose.edit.EstimateRow
 import org.tasks.compose.edit.ListPickerDialog
 import org.tasks.compose.edit.MarkdownEditField
 import org.tasks.compose.edit.PrioritySection
@@ -61,6 +62,7 @@ import org.tasks.compose.edit.TaskEditActionBarHeight
 import org.tasks.compose.edit.TaskEditCard
 import org.tasks.compose.edit.TaskEditCardRow
 import org.tasks.compose.edit.TaskEditCardRowContent
+import org.tasks.compose.edit.TimerRow
 import org.tasks.compose.pickers.DueDatePickerSheet
 import org.tasks.compose.pickers.StartDatePickerSheet
 import org.tasks.compose.pickers.alarmFromSelection
@@ -266,6 +268,19 @@ fun TaskEditScreen(
                                 keyboardController?.hide()
                                 showDueDatePicker = true
                             },
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        EstimateRow(
+                            estimatedSeconds = state.task.estimatedSeconds,
+                            onEstimateChanged = viewModel::setEstimate,
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        TimerRow(
+                            timerStart = state.task.timerStart,
+                            elapsedSeconds = state.task.elapsedSeconds,
+                            onPlay = viewModel::startTimer,
+                            onTick = viewModel::stopTimer,
+                            onCross = viewModel::stopTimer,
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         AlarmsSection(
