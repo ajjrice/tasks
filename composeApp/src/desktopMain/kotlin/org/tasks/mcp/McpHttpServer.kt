@@ -28,6 +28,7 @@ class McpHttpServer(
     private val token: () -> String,
     private val permissions: ToolPermissions,
     private val api: DatabaseTasksApi,
+    private val filters: DatabaseFiltersApi,
     private val log: ActivityLog,
     private val onStateChange: (Boolean, String?) -> Unit,
     private val analytics: org.tasks.analytics.Analytics? = null,
@@ -126,7 +127,7 @@ class McpHttpServer(
             ),
             instructions = instructions(),
         )
-        server.registerTasksTools(api, permissions, log, analytics, requests, selection)
+        server.registerTasksTools(api, filters, permissions, log, analytics, requests, selection)
         server.onConnect {
             log.record(
                 tool = "connect",
