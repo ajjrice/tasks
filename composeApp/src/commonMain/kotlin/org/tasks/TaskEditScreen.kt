@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.collect
 import org.jetbrains.compose.resources.stringResource
+import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import org.tasks.themes.isDarkTheme
 import org.tasks.compose.PlatformBackHandler
@@ -47,6 +48,7 @@ import org.tasks.compose.edit.DeleteTaskDialog
 import org.tasks.compose.edit.DescriptionRow
 import org.tasks.compose.edit.DiscardChangesDialog
 import org.tasks.compose.edit.DueDateRow
+import org.tasks.compose.edit.EditScreenSection
 import org.tasks.compose.edit.ListPickerDialog
 import org.tasks.compose.edit.MarkdownEditField
 import org.tasks.compose.edit.ParentBreadcrumb
@@ -79,6 +81,7 @@ import org.tasks.time.DateTimeUtils2.currentTimeMillis
 import org.tasks.time.noon
 import org.tasks.themes.TasksIcons
 import org.tasks.viewmodel.FilterPickerViewModel
+import org.tasks.viewmodel.EditScreenCustomizationViewModel
 import org.tasks.viewmodel.TaskEditViewModel
 import tasks.kmp.generated.resources.Res
 import tasks.kmp.generated.resources.back
@@ -115,11 +118,23 @@ fun TaskEditScreen(
 
     val saveAndClose = { viewModel.save() }
 
+    // Shared with the action-bar discard flow below; the back handler reuses the same
+    // confirmation dialog when the "back button saves task" pref is off and the task is dirty.
+    var showDiscardConfirmation by remember { mutableStateOf(false) }
+
     // Armed unless the caller says something is on top of this screen. In a list-detail scene
     // neither NavDisplay nor the task list chrome has a back handler enabled, so leaving this one
     // off while the row loads would let back exit the app instead of closing the editor. save() is
-    // a no-op while loading and still emits the close.
-    PlatformBackHandler(enabled = backHandlerEnabled) { saveAndClose() }
+    // a no-op while loading and still emits the close. Whether back saves or discards follows
+    // the "back button saves task" pref (Settings > Edit screen options); window close (X) is
+    // intentionally out of scope and keeps the existing always-commit behaviour.
+    PlatformBackHandler(enabled = backHandlerEnabled) {
+        when (viewModel.resolveBackAction()) {
+            TaskEditViewModel.BackAction.Save -> saveAndClose()
+            TaskEditViewModel.BackAction.PromptDiscard -> showDiscardConfirmation = true
+            TaskEditViewModel.BackAction.Discard -> viewModel.discardChanges()
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
@@ -190,7 +205,6 @@ fun TaskEditScreen(
                     var showStartDatePicker by remember { mutableStateOf(false) }
                     var showRecurrencePicker by remember { mutableStateOf(false) }
                     var showAlarmDateTimePicker by remember { mutableStateOf(false) }
-                    var showDiscardConfirmation by remember { mutableStateOf(false) }
                     var showDeleteConfirmation by remember { mutableStateOf(false) }
                     var alarmToReplace by remember { mutableStateOf<Alarm?>(null) }
                     var pickerToken by remember { mutableStateOf(0) }
@@ -198,6 +212,12 @@ fun TaskEditScreen(
                     val is24Hour = is24HourFormat()
                     val keyboardController = LocalSoftwareKeyboardController.current
                     LaunchedEffect(list) { showListPicker = false }
+                    // The blocks below render in the user's saved order; "Customize edit
+                    // screen" (Settings) reorders and hides them. The title field and the
+                    // action bar are pinned and never customisable.
+                    val sectionOrder by koinInject<EditScreenCustomizationViewModel>()
+                        .visibleSections
+                        .collectAsState()
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -216,8 +236,10 @@ fun TaskEditScreen(
                             onTitleChange = viewModel::setTitle,
                             focusRequester = titleFocusRequester,
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        if (state.isDraft) {
+                        sectionOrder.forEach { section ->
+                            Spacer(modifier = Modifier.height(16.dp))
+                            when (section) {
+                                EditScreenSection.LIST -> if (state.isDraft) {
                             TaskEditCard {
                                 TaskEditCardRowContent(
                                     value = list.title,
@@ -246,7 +268,7 @@ fun TaskEditScreen(
                                 iconTint = listTint,
                             )
                         }
-                        Spacer(modifier = Modifier.height(16.dp))
+                        EditScreenSection.START_DATE ->
                         StartDateRow(
                             startDate = state.task.hideUntil,
                             selectedDay = state.startDay,
@@ -262,7 +284,7 @@ fun TaskEditScreen(
                                 showStartDatePicker = true
                             },
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        EditScreenSection.DUE_DATE ->
                         DueDateRow(
                             dueDate = state.task.dueDate,
                             hasDueDateAlarm = remember(state.alarms) {
@@ -275,7 +297,7 @@ fun TaskEditScreen(
                                 showDueDatePicker = true
                             },
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        EditScreenSection.REMINDERS ->
                         AlarmsSection(
                             vm = reminderViewModel,
                             alarms = state.alarms,
@@ -291,7 +313,7 @@ fun TaskEditScreen(
                                 showAlarmDateTimePicker = true
                             },
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        EditScreenSection.REPEATS ->
                         RepeatRow(
                             recurrence = state.task.recurrence,
                             repeatFrom = state.task.repeatFrom,
@@ -301,7 +323,7 @@ fun TaskEditScreen(
                             },
                             onRepeatFromChanged = viewModel::setRepeatFrom,
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        EditScreenSection.TAGS ->
                         TagsSection(
                             tags = state.tags,
                             colorProvider = tagChipColorProvider,
@@ -311,17 +333,17 @@ fun TaskEditScreen(
                             },
                             onClear = { tag -> viewModel.setTags(state.tags - tag) },
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        EditScreenSection.PRIORITY ->
                         PrioritySection(
                             priority = state.task.priority,
                             onPriorityChange = viewModel::setPriority,
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        EditScreenSection.DESCRIPTION ->
                         DescriptionRow(
                             description = state.task.notes.orEmpty(),
                             onDescriptionChange = viewModel::setDescription,
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        EditScreenSection.SUBTASKS ->
                         SubtasksSection(
                             subtasks = state.subtasks,
                             focusSubtask = state.focusSubtask,
@@ -350,6 +372,8 @@ fun TaskEditScreen(
                             onRestoreSubtask = viewModel::restoreSubtask,
                             onSubtaskFocused = viewModel::onSubtaskFocused,
                         )
+                            }
+                        }
                         Spacer(
                             modifier = Modifier.height(
                                 TaskEditActionBarHeight + FloatingToolbarBottomMargin
