@@ -39,7 +39,7 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 import tasks.kmp.generated.resources.Res
 import tasks.kmp.generated.resources.EPr_customize_edit_screen
 import tasks.kmp.generated.resources.back
-import tasks.kmp.generated.resources.reset_order
+import tasks.kmp.generated.resources.reset_edit_order
 
 /**
  * The desktop "Customize edit screen" screen: reorder the blocks on the task
@@ -81,7 +81,7 @@ fun EditScreenCustomizationDetail(
                     ) {
                         SymbolIcon(
                             name = TasksIcons.REFRESH,
-                            contentDescription = stringResource(Res.string.reset_order),
+                            contentDescription = stringResource(Res.string.reset_edit_order),
                         )
                     }
                 },

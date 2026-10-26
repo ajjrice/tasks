@@ -212,7 +212,7 @@
     <string name="reset_order">Reset sort order</string>
     <string name="customize_drawer">Customize drawer</string>
     <string name="customize_drawer_summary">Drag and drop to rearrange menu items</string>
-    <string name="reset_order">Reset order</string>
+    <string name="reset_edit_order">Reset order</string>
     <string name="hide_unused_tags">Hide unused tags</string>
     <string name="hide_unused_places">Hide unused places</string>
     <string name="backup_BPr_header">Backups</string>
