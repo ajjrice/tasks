@@ -1,10 +1,12 @@
 package org.tasks.caldav
 
 import org.tasks.caldav.iCalendar.Companion.collapsed
+import org.tasks.caldav.iCalendar.Companion.estimateSeconds
 import org.tasks.caldav.iCalendar.Companion.matchesDue
 import org.tasks.caldav.iCalendar.Companion.matchesStart
 import org.tasks.caldav.iCalendar.Companion.order
 import org.tasks.caldav.iCalendar.Companion.parent
+import org.tasks.caldav.iCalendar.Companion.timerLog
 import org.tasks.caldav.iCalendar.Companion.toDueMillis
 import org.tasks.caldav.iCalendar.Companion.toStartMillis
 import org.tasks.data.entity.CaldavTask
@@ -17,6 +19,7 @@ import org.tasks.date.DateTimeUtils.newDateTime
 import org.tasks.icalendar.TodoStatus
 import org.tasks.icalendar.VTodo
 import org.tasks.repeats.Recur
+import org.tasks.timer.TimerLog
 import org.tasks.time.DateTime.Companion.UTC
 import org.tasks.time.DateTimeUtils2.currentTimeMillis
 import org.tasks.time.startOfSecond
@@ -36,6 +39,8 @@ fun org.tasks.data.entity.Task.applyRemote(
     applyStart(remote, local)
     applyCollapsed(remote, local)
     applyOrder(remote, local)
+    applyTimer(remote, local)
+    applyEstimate(remote, local)
     return this
 }
 
@@ -147,6 +152,27 @@ private fun org.tasks.data.entity.Task.applyOrder(remote: VTodo, local: VTodo?) 
 private fun CaldavTask.applyParent(remote: VTodo, local: VTodo?) {
     if (local == null || local.parent == remoteParent) {
         remoteParent = remote.parent
+    }
+}
+
+private fun org.tasks.data.entity.Task.applyTimer(remote: VTodo, local: VTodo?) {
+    // Adopts the remote timer log when the local one is unchanged since the last sync, and
+    // refreshes the derived display cache (timerStart, elapsedSeconds) from it. A remote open
+    // line keeps the timer visibly running on this device so it can be stopped from here.
+    if (local == null || local.timerLog.orEmpty() == timerLog) {
+        val log = remote.timerLog.orEmpty()
+        if (log != timerLog) {
+            val parsed = TimerLog.parse(log)
+            timerLog = log
+            timerStart = parsed.timerStart
+            elapsedSeconds = parsed.elapsedSeconds
+        }
+    }
+}
+
+private fun org.tasks.data.entity.Task.applyEstimate(remote: VTodo, local: VTodo?) {
+    if (local == null || local.estimateSeconds == estimatedSeconds) {
+        estimatedSeconds = remote.estimateSeconds
     }
 }
 

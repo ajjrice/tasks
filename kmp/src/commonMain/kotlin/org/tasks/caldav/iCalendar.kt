@@ -325,6 +325,8 @@ class iCalendar(
         private const val OC_HIDESUBTASKS = "X-OC-HIDESUBTASKS"
         private const val MOZ_SNOOZE_TIME = "X-MOZ-SNOOZE-TIME"
         private const val MOZ_LASTACK = "X-MOZ-LASTACK"
+        private const val TASKS_TIMER = "X-TASKS-TIMER"
+        private const val TASKS_EST_DUR = "X-TASKS-EST-DUR"
         private const val HIDE_SUBTASKS = "1"
         private val PRODID_MATCHER = Regex(".*?PRODID:(.*?)\n.*", RegexOption.DOT_MATCHES_ALL)
         private val IGNORE_ALARM = parseICalDateTime("19760401T005545Z")!!
@@ -436,6 +438,25 @@ class iCalendar(
                 setUnknownProperty(MOZ_SNOOZE_TIME, value?.takeIf { DateTime(it).isAfterNow }?.let { formatICalUtc(it) })
             }
 
+        /**
+         * The append-only timer session log (see [org.tasks.timer.TimerLog]).
+         * Stored verbatim: ical4j escapes newlines and folds long lines on
+         * the wire and restores both on parse, so a multiline log round-trips
+         * exactly (verified by test).
+         */
+        var VTodo.timerLog: String?
+            get() = unknownProperty(TASKS_TIMER)
+            set(value) {
+                setUnknownProperty(TASKS_TIMER, value?.takeIf { it.isNotBlank() })
+            }
+
+        /** The estimated duration in seconds; absent property = unset. */
+        var VTodo.estimateSeconds: Int
+            get() = unknownProperty(TASKS_EST_DUR)?.removeSuffix("s")?.toIntOrNull() ?: 0
+            set(value) {
+                setUnknownProperty(TASKS_EST_DUR, value.takeIf { it > 0 }?.toString()?.plus("s"))
+            }
+
         private fun VTodo.unknownProperty(name: String): String? =
             unknownProperties.find { it.name.equals(name, ignoreCase = true) }?.value
 
@@ -490,6 +511,8 @@ class iCalendar(
                 null
             }
             lastModified = newDateTime(task.modificationDate).toUTC().millis
+            timerLog = task.timerLog
+            estimateSeconds = task.estimatedSeconds
             priority = when (task.priority) {
                 org.tasks.data.entity.Task.Priority.NONE -> 0
                 org.tasks.data.entity.Task.Priority.MEDIUM -> 5
