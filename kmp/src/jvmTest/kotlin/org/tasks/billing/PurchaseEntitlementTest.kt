@@ -27,6 +27,7 @@ import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoInteractions
 import org.tasks.auth.TasksServerEnvironment
+import org.tasks.http.KtorClientFactory
 import org.tasks.http.OkHttpClientFactory
 import org.tasks.http.OkHttpKtorClientFactory
 import org.tasks.security.KeyProvider
@@ -272,21 +273,24 @@ class PurchaseEntitlementTest {
     }
 
     @Test
-    fun deletesEntitlementWhenSubscriptionRevoked() = runBlocking {
-        storeOnDisk(jwt(exp = now() - GRACE_SECONDS - DAY_SECONDS))
+    fun keepsTheReceiptWhenTheSubscriptionStopsCovering() = runBlocking {
+        val stored = jwt(exp = now() - GRACE_SECONDS - DAY_SECONDS)
+        storeOnDisk(stored)
         server.enqueue(MockResponse().setResponseCode(402))
 
         val entitlement = entitlement()
         entitlement.initialize()
 
         assertTrue(entitlement.awaitReady())
-        assertNull(entitlement.getJwt())
-        assertFalse(entitlementFile.exists())
+        assertFalse(entitlement.hasPro.first())
+        assertEquals(stored, entitlement.getJwt())
+        assertTrue(entitlementFile.exists())
+        assertEquals("stored-token", readFromDisk().refreshToken)
     }
 
     @Test
-    fun clearsSubscriptionDetailsWhenRevoked() = runBlocking {
-        storeOnDisk(jwt(exp = now() - GRACE_SECONDS - DAY_SECONDS))
+    fun saysWhatTheLapsedSubscriptionWas() = runBlocking {
+        storeOnDisk(jwt(exp = now() - GRACE_SECONDS - DAY_SECONDS), EntitlementProvider.STRIPE)
         server.enqueue(MockResponse().setResponseCode(402))
 
         val entitlement = entitlement()
@@ -294,9 +298,27 @@ class PurchaseEntitlementTest {
         entitlement.awaitReady()
 
         assertFalse(entitlement.hasPro.first())
-        assertNull(entitlement.sku.first())
-        assertNull(entitlement.formattedPrice.first())
-        assertNull(entitlement.provider.first())
+        assertEquals("annual", entitlement.sku.first())
+        assertEquals(EntitlementProvider.STRIPE, entitlement.provider.first())
+    }
+
+    @Test
+    fun aResubscribeAnywhereElseUnlocksThisDeviceWithoutBeingAsked() = runBlocking {
+        storeOnDisk(jwt(exp = now() - GRACE_SECONDS - DAY_SECONDS))
+        server.enqueue(MockResponse().setResponseCode(402))
+        val renewed = jwt(exp = now() + 30 * DAY_SECONDS)
+        server.enqueue(refreshResponse(renewed))
+
+        val entitlement = entitlement(
+            lapsedRetryIntervalSeconds = 1,
+            httpClientFactory = freshClientFactory,
+        )
+        entitlement.initialize()
+        entitlement.awaitReady()
+
+        assertFalse(entitlement.hasPro.first())
+        withTimeout(10_000) { entitlement.hasPro.first { it } }
+        assertEquals(renewed, entitlement.getJwt())
     }
 
     @Test
@@ -533,6 +555,50 @@ class PurchaseEntitlementTest {
     }
 
     @Test
+    fun aDesktopLinkedFromACardSubscriptionLearnsWhoSoldIt() = runBlocking {
+        storeOnDisk(jwt(exp = now() + 30 * DAY_SECONDS), EntitlementProvider.PLAY)
+        server.enqueue(
+            checkResponse(
+                sku = "annual_30",
+                formattedPrice = "USD 29.99",
+                status = "active",
+                creditCents = 900,
+                creditCurrency = "EUR",
+                provider = "stripe",
+            )
+        )
+
+        val entitlement = entitlement()
+        entitlement.initialize()
+        entitlement.awaitReady()
+        entitlement.checkTier()
+
+        assertEquals(EntitlementProvider.STRIPE, entitlement.provider.first())
+        assertEquals(EntitlementProvider.STRIPE, readFromDisk().provider)
+        assertEquals(900, entitlement.terms.first()?.creditCents)
+    }
+
+    @Test
+    fun anArmThisVersionDoesNotKnowIsNotTakenForStripe() = runBlocking {
+        storeOnDisk(jwt(exp = now() + 30 * DAY_SECONDS), EntitlementProvider.PLAY)
+        server.enqueue(
+            checkResponse(
+                sku = "annual_30",
+                formattedPrice = "USD 29.99",
+                provider = "apple",
+            )
+        )
+
+        val entitlement = entitlement()
+        entitlement.initialize()
+        entitlement.awaitReady()
+        entitlement.checkTier()
+
+        assertEquals(EntitlementProvider.PLAY, entitlement.provider.first())
+        assertNull(entitlement.terms.first())
+    }
+
+    @Test
     fun aCheckSpendsNoCredentialAndLooksLikeNoPurchase() = runBlocking {
         val stored = jwt(exp = now() + 30 * DAY_SECONDS)
         storeOnDisk(stored, EntitlementProvider.STRIPE)
@@ -698,14 +764,24 @@ class PurchaseEntitlementTest {
         assertEquals(0, server.requestCount)
     }
 
+    private val freshClientFactory = OkHttpKtorClientFactory(object : OkHttpClientFactory {
+        override suspend fun newClient(
+            foreground: Boolean,
+            cookieKey: String?,
+            block: (OkHttpClient.Builder) -> Unit,
+        ) = OkHttpClient.Builder().apply(block).build()
+    })
+
     private fun entitlement(
         refreshCallTimeoutMillis: Long = 20_000L,
         readyTimeoutMillis: Long = 30_000L,
         dataDir: File = dir,
+        lapsedRetryIntervalSeconds: Long = 24 * 60 * 60L,
+        httpClientFactory: KtorClientFactory = clientFactory,
     ) = PurchaseEntitlement(
         dataDir = dataDir.path,
         encryption = encryption,
-        httpClientFactory = clientFactory,
+        httpClientFactory = httpClientFactory,
         serverEnvironment = mock<TasksServerEnvironment> {
             on { caldavUrl } doReturn server.url("/").toString().trimEnd('/')
         },
@@ -715,6 +791,7 @@ class PurchaseEntitlementTest {
         publicKeyBase64 = Base64.getEncoder().encodeToString(keyPair.public.encoded),
         refreshCallTimeoutMillis = refreshCallTimeoutMillis,
         readyTimeoutMillis = readyTimeoutMillis,
+        lapsedRetryIntervalSeconds = lapsedRetryIntervalSeconds,
     )
 
     private fun now() = System.currentTimeMillis() / 1000
@@ -751,8 +828,10 @@ class PurchaseEntitlementTest {
         trialEnd: Long? = null,
         creditCents: Int? = null,
         creditCurrency: String? = null,
+        provider: String? = null,
     ): MockResponse {
         val fields = buildList {
+            provider?.let { add(""""provider":"$it"""") }
             add(""""sku":"$sku"""")
             add(""""formatted_price":"$formattedPrice"""")
             status?.let { add(""""status":"$it"""") }

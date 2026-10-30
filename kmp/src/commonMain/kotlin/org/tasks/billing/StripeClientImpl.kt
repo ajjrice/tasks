@@ -25,6 +25,7 @@ class StripeClientImpl(
     private val caldavUrl: () -> String,
     private val json: Json,
     private val authorization: suspend () -> String? = { null },
+    private val installId: suspend () -> String? = { null },
     private val callTimeoutMillis: Long = CALL_TIMEOUT_MILLIS,
 ) : StripeClient {
     private val logger = Logger.withTag(TAG)
@@ -46,7 +47,11 @@ class StripeClientImpl(
     )
 
     @Serializable
-    private data class CheckoutRequest(val price_id: String? = null)
+    private data class CheckoutRequest(
+        val price_id: String? = null,
+        val purchase_jwt: String? = null,
+        val install_id: String? = null,
+    )
 
     @Serializable
     private data class ChangeRequest(
@@ -68,11 +73,16 @@ class StripeClientImpl(
     private data class RestoreRequest(val email: String)
 
     @Serializable
-    private data class VerifyRequest(val email: String, val code: String)
+    private data class VerifyRequest(
+        val email: String,
+        val code: String,
+        val install_id: String? = null,
+    )
 
     @Serializable
     private data class PurchaseResponse(
         val status: String = STATUS_PENDING,
+        val restored: String? = null,
         val purchase_jwt: String? = null,
         val refresh_token: String? = null,
         val sku: String? = null,
@@ -84,6 +94,15 @@ class StripeClientImpl(
                 val refreshToken = refresh_token ?: return null
                 return StripePurchase(jwt, refreshToken, sku, formatted_price)
             }
+
+        fun covers(logger: Logger): Boolean = when (restored) {
+            RESTORED_SUBSCRIPTION -> true
+            RESTORED_CUSTOMER -> false
+            else -> {
+                logger.w { "Restore did not say what it restored" }
+                true
+            }
+        }
     }
 
     @Serializable
@@ -116,46 +135,89 @@ class StripeClientImpl(
         }
     }
 
-    override suspend fun createCheckout(priceId: String?): StripeCheckout {
-        val session = authorization()
-        checkout(priceId, session)?.let { return it }
-        if (session == null) return StripeCheckout.Failed
-        logger.i { "Session rejected, opening an anonymous checkout" }
-        return checkout(priceId, authorization = null) ?: StripeCheckout.Failed
+    override suspend fun createCheckout(priceId: String?, purchaseJwt: String?): StripeCheckout {
+        var authorization = authorization()
+        var receipt = purchaseJwt
+        while (true) {
+            when (val attempt = checkout(priceId, authorization, receipt)) {
+                is Attempt.Answered -> return attempt.result
+                Attempt.WithoutSession -> {
+                    if (authorization == null) return StripeCheckout.Failed
+                    logger.i { "Session rejected, opening an anonymous checkout" }
+                    authorization = null
+                }
+                Attempt.WithoutReceipt -> {
+                    if (receipt == null) return StripeCheckout.Failed
+                    logger.i { "The server cannot place this receipt, buying without it" }
+                    receipt = null
+                }
+            }
+        }
     }
 
-    private suspend fun checkout(priceId: String?, authorization: String?): StripeCheckout? =
-        call("checkout", fallback = StripeCheckout.Unavailable) { client ->
-            val response = client.post(url("/stripe/checkout")) {
-                authorization?.let { header(HttpHeaders.Authorization, it) }
-                jsonBody(json, CheckoutRequest.serializer(), CheckoutRequest(priceId))
-            }
-            val body = response.bodyAsText()
-            when (response.status.value) {
-                in 200..299 -> {
-                    val result = json.decodeFromString(CheckoutResponse.serializer(), body)
+    private sealed interface Attempt {
+        data class Answered(val result: StripeCheckout) : Attempt
+
+        data object WithoutSession : Attempt
+
+        data object WithoutReceipt : Attempt
+    }
+
+    private suspend fun checkout(
+        priceId: String?,
+        authorization: String?,
+        purchaseJwt: String?,
+    ): Attempt = call("checkout", fallback = Attempt.Answered(StripeCheckout.Unavailable)) { client ->
+        val response = client.post(url("/stripe/checkout")) {
+            authorization?.let { header(HttpHeaders.Authorization, it) }
+            jsonBody(
+                json,
+                CheckoutRequest.serializer(),
+                CheckoutRequest(
+                    price_id = priceId,
+                    purchase_jwt = purchaseJwt,
+                    install_id = installId(),
+                ),
+            )
+        }
+        val body = response.bodyAsText()
+        when (response.status.value) {
+            in 200..299 -> {
+                val result = json.decodeFromString(CheckoutResponse.serializer(), body)
+                Attempt.Answered(
                     StripeCheckout.Started(
                         code = result.code,
                         url = result.url,
                         expiresAt = result.expires_at,
                     )
+                )
+            }
+            400 -> if (purchaseJwt != null && body.errorCode() == ERROR_INVALID_PURCHASE_JWT) {
+                Attempt.WithoutReceipt
+            } else {
+                Attempt.Answered(StripeCheckout.UnknownPrice)
+            }
+            401 -> Attempt.WithoutSession
+            404 -> if (purchaseJwt != null && body.errorCode() == ERROR_UNKNOWN_PURCHASE) {
+                Attempt.WithoutReceipt
+            } else {
+                logger.w { "Checkout failed: HTTP 404 ${body.errorCode()}" }
+                Attempt.Answered(StripeCheckout.Failed)
+            }
+            409 -> {
+                if (body.errorCode() != ERROR_SUBSCRIPTION_EXISTS) {
+                    logger.w { "Unexpected 409 from checkout: ${body.errorCode()}" }
                 }
-                400 -> StripeCheckout.UnknownPrice
-                401 -> null
-                409 -> {
-                    if (body.errorCode() != ERROR_SUBSCRIPTION_EXISTS) {
-                        logger.w { "Unexpected 409 from checkout: ${body.errorCode()}" }
-                    }
-                    StripeCheckout.SubscriptionExists(product = body.jsonField("product"))
-                }
-                429 -> StripeCheckout.RateLimited
-                503 -> StripeCheckout.Unavailable
-                else -> {
-                    logger.w { "Checkout failed: HTTP ${response.status.value}" }
-                    StripeCheckout.Failed
-                }
+                Attempt.Answered(StripeCheckout.SubscriptionExists(product = body.jsonField("product")))
+            }
+            429 -> Attempt.Answered(StripeCheckout.RateLimited)
+            503 -> Attempt.Answered(StripeCheckout.Unavailable)
+            else -> {
+                logger.w { "Checkout failed: HTTP ${response.status.value}" }
+                Attempt.Answered(StripeCheckout.Failed)
             }
         }
+    }
 
     override suspend fun changePlan(priceId: String, purchaseJwt: String?): StripeChange =
         call("change", fallback = StripeChange.Unavailable) { client ->
@@ -249,19 +311,22 @@ class StripeClientImpl(
     override suspend fun verifyRestoreCode(email: String, code: String): StripeRestore =
         call("verify", fallback = StripeRestore.Unavailable) { client ->
             val response = client.post(url("/stripe/restore/verify")) {
-                jsonBody(json, VerifyRequest.serializer(), VerifyRequest(email, code))
+                jsonBody(
+                    json,
+                    VerifyRequest.serializer(),
+                    VerifyRequest(email = email, code = code, install_id = installId()),
+                )
             }
             val body = response.bodyAsText()
             when (response.status.value) {
                 in 200..299 -> {
-                    val purchase = json
-                        .decodeFromString(PurchaseResponse.serializer(), body)
-                        .purchase
+                    val result = json.decodeFromString(PurchaseResponse.serializer(), body)
+                    val purchase = result.purchase
                     if (purchase == null) {
                         logger.w { "Restore response has no purchase" }
                         StripeRestore.Failed
                     } else {
-                        StripeRestore.Restored(purchase)
+                        StripeRestore.Restored(purchase, covered = result.covers(logger))
                     }
                 }
                 400 -> if (body.errorCode() == ERROR_INVALID_EMAIL) {
@@ -313,6 +378,8 @@ class StripeClientImpl(
     companion object {
         private const val TAG = "StripeClient"
         private const val STATUS_PENDING = "pending"
+        private const val RESTORED_SUBSCRIPTION = "subscription"
+        private const val RESTORED_CUSTOMER = "customer"
         private const val ERROR_SUBSCRIPTION_EXISTS = "subscription_exists"
         private const val ERROR_INVALID_EMAIL = "invalid_email"
         private const val ERROR_INVALID_PURCHASE_JWT = "invalid_purchase_jwt"

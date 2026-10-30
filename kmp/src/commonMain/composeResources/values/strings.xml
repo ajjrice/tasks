@@ -775,4 +775,8 @@
     <string name="filter_eisenhower_box_4">Not important and not urgent</string>
     <string name="next_month">Next Month</string>
     <string name="now">Now</string>
+
+    <!-- Move into new parent task (desktop edit pane) -->
+    <string name="make_parent_task">Move into new parent task</string>
+    <string name="make_parent_task_title">New parent task</string>
 </resources>

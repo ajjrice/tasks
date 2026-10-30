@@ -153,9 +153,14 @@ class StripePurchasesTest {
         }
     }
 
+    private val checkoutReceipts = mutableListOf<String?>()
+
     private val stripeClient = object : StripeClient {
         override suspend fun prices(): List<StripePrice>? = null
-        override suspend fun createCheckout(priceId: String?) = StripeCheckout.Failed
+        override suspend fun createCheckout(priceId: String?, purchaseJwt: String?): StripeCheckout {
+            checkoutReceipts.add(purchaseJwt)
+            return StripeCheckout.Failed
+        }
         override suspend fun changePlan(priceId: String, purchaseJwt: String?): StripeChange {
             changeReceipts.add(purchaseJwt)
             return change
@@ -248,6 +253,63 @@ class StripePurchasesTest {
         sku = sku,
         formattedPrice = "USD 3.00",
     )
+
+    @Test
+    fun aCheckoutNamesTheCustomerThisDeviceAlreadyBoughtOn() = runBlocking {
+        val entitlement = entitlement()
+        val held = purchase()
+        purchases(entitlement).keep(held)
+
+        purchases(entitlement).createCheckout(null)
+
+        assertEquals(listOf(held.purchaseJwt), checkoutReceipts)
+    }
+
+    @Test
+    fun aDeviceThatHasBoughtNothingOpensAPlainCheckout() = runBlocking {
+        purchases().createCheckout(null)
+
+        assertEquals(listOf<String?>(null), checkoutReceipts)
+    }
+
+    @Test
+    fun aReceiptTheSubscriptionHasOutlivedIsNotAPlanToChange() = runBlocking {
+        val lapsed = System.currentTimeMillis() / 1000 - 30 * 24 * 60 * 60
+        entitlement().storeEntitlement(
+            jwt = jwt(exp = lapsed),
+            refreshToken = "refresh-1",
+            sku = "annual_30",
+            provider = EntitlementProvider.STRIPE,
+        )
+        val reloaded = entitlement()
+        reloaded.initialize()
+        reloaded.awaitReady()
+
+        assertFalse(reloaded.hasPro.first())
+        assertNull(purchases(reloaded).currentPlan())
+    }
+
+    @Test
+    fun aReceiptForAnEndedSubscriptionIsKeptWithoutUnlocking() = runBlocking {
+        val entitlement = entitlement()
+        val held = purchase()
+
+        val outcome = purchases(entitlement).keep(held, covered = false)
+
+        assertEquals(StripeRestoreOutcome.Ended, outcome)
+        assertFalse(entitlement.hasPro.first())
+        assertEquals(held.purchaseJwt, entitlement.getJwt())
+        assertEquals("monthly_03", entitlement.sku.first())
+    }
+
+    @Test
+    fun anEndedSubscriptionOnAnotherAccountStillNamesThatAccount() = runBlocking {
+        claimResult = StripeSubscriptionResult.TokenInUse("a***@example.com")
+
+        val outcome = purchases().keep(purchase(), covered = false)
+
+        assertEquals(StripeRestoreOutcome.AccountInUse("a***@example.com"), outcome)
+    }
 
     @Test
     fun aKeptPurchaseUnlocksThisDevice() = runBlocking {
@@ -716,8 +778,10 @@ class StripePurchasesTest {
         }
     }
 
-    private fun jwt(key: PrivateKey = keyPair.private): String {
-        val exp = System.currentTimeMillis() / 1000 + 7 * 24 * 60 * 60
+    private fun jwt(
+        key: PrivateKey = keyPair.private,
+        exp: Long = System.currentTimeMillis() / 1000 + 7 * 24 * 60 * 60,
+    ): String {
         val header = encode("""{"alg":"ES256","typ":"JWT"}""".toByteArray())
         val payload = encode("""{"iss":"tasks.org","exp":$exp}""".toByteArray())
         val signed = "$header.$payload"

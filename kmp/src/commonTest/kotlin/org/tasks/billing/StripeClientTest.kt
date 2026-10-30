@@ -36,11 +36,15 @@ class StripeClientTest {
 
     private var caldavUrl = "https://caldav.example.com"
 
-    private fun client(authorization: String? = null) = StripeClientImpl(
+    private fun client(
+        authorization: String? = null,
+        installId: String? = null,
+    ) = StripeClientImpl(
         httpClientFactory = factory,
         caldavUrl = { caldavUrl },
         json = Json { ignoreUnknownKeys = true },
         authorization = { authorization },
+        installId = { installId },
     )
 
     private fun respondWith(
@@ -140,6 +144,106 @@ class StripeClientTest {
 
         assertEquals(1, requests.size)
         assertEquals("{}", body())
+    }
+
+    @Test
+    fun namesThisInstallWhenItOpensACheckout() = runTest {
+        respondWith(
+            HttpStatusCode.OK,
+            """{"code":"c0de","url":"https://pay.stripe.com/x","expires_at":1000}""",
+        )
+
+        client(installId = "install-1").createCheckout("pri_2")
+
+        assertEquals("""{"price_id":"pri_2","install_id":"install-1"}""", body())
+    }
+
+    @Test
+    fun namesThisInstallWhenItRedeemsARestoreCode() = runTest {
+        respondWith(HttpStatusCode.OK, """{"purchase_jwt":"jwt","refresh_token":"rt"}""")
+
+        client(installId = "install-1").verifyRestoreCode("alice@example.com", "123456")
+
+        assertEquals(
+            """{"email":"alice@example.com","code":"123456","install_id":"install-1"}""",
+            body(),
+        )
+    }
+
+    @Test
+    fun saysNothingAboutTheInstallWhenThereIsNoneToName() = runTest {
+        respondWith(
+            HttpStatusCode.OK,
+            """{"code":"c0de","url":"https://pay.stripe.com/x","expires_at":1000}""",
+        )
+
+        client().createCheckout("pri_2")
+
+        assertEquals("""{"price_id":"pri_2"}""", body())
+    }
+
+    @Test
+    fun aCheckoutSaysWhichCustomerIsBuying() = runTest {
+        respondWith(
+            HttpStatusCode.OK,
+            """{"code":"c0de","url":"https://pay.stripe.com/x","expires_at":1000}""",
+        )
+
+        client().createCheckout("pri_2", purchaseJwt = "old-receipt")
+
+        assertEquals("""{"price_id":"pri_2","purchase_jwt":"old-receipt"}""", body())
+    }
+
+    @Test
+    fun aReceiptTheServerNeverSignedDoesNotBlockTheSale() = runTest {
+        handler = { request ->
+            if ((request.body as TextContent).text.contains("purchase_jwt")) {
+                respond(
+                    """{"error":"invalid_purchase_jwt"}""",
+                    HttpStatusCode.BadRequest,
+                    headersOf("Content-Type", "application/json"),
+                )
+            } else {
+                respondOk("""{"code":"c0de","url":"https://pay.stripe.com/x","expires_at":1000}""")
+            }
+        }
+
+        val result = client().createCheckout("pri_2", purchaseJwt = "not-ours")
+
+        assertEquals(StripeCheckout.Started("c0de", "https://pay.stripe.com/x", 1000), result)
+        assertEquals(2, requests.size)
+        assertEquals("""{"price_id":"pri_2"}""", body(1))
+    }
+
+    @Test
+    fun anEvictedPurchaseRowDoesNotBlockTheSale() = runTest {
+        handler = { request ->
+            if ((request.body as TextContent).text.contains("purchase_jwt")) {
+                respond(
+                    """{"error":"unknown_purchase"}""",
+                    HttpStatusCode.NotFound,
+                    headersOf("Content-Type", "application/json"),
+                )
+            } else {
+                respondOk("""{"code":"c0de","url":"https://pay.stripe.com/x","expires_at":1000}""")
+            }
+        }
+
+        val result = client().createCheckout("pri_2", purchaseJwt = "evicted")
+
+        assertEquals(StripeCheckout.Started("c0de", "https://pay.stripe.com/x", 1000), result)
+        assertEquals(2, requests.size)
+    }
+
+    @Test
+    fun aPriceTheLadderDoesNotSellIsStillAPricingFault() = runTest {
+        respondWith(HttpStatusCode.BadRequest, """{"error":"unknown_price"}""")
+
+        assertEquals(
+            StripeCheckout.UnknownPrice,
+            client().createCheckout("pri_2", purchaseJwt = "old-receipt"),
+        )
+        assertEquals(1, requests.size)
     }
 
     @Test
@@ -458,6 +562,53 @@ class StripeClientTest {
             StripeRestore.Restored(StripePurchase("jwt", "rt", "annual_stripe", "\$30.00")),
             result,
         )
+    }
+
+    @Test
+    fun aRestoreOfALiveSubscriptionUnlocks() = runTest {
+        respondWith(
+            HttpStatusCode.OK,
+            """{"restored":"subscription","purchase_jwt":"jwt","refresh_token":"rt",""" +
+                """"sku":"annual_30","subscription":{"isActive":true}}""",
+        )
+
+        assertEquals(
+            StripeRestore.Restored(
+                StripePurchase("jwt", "rt", "annual_30"),
+                covered = true,
+            ),
+            client().verifyRestoreCode("alice@example.com", "123456"),
+        )
+    }
+
+    @Test
+    fun aRestoreOfAnEndedSubscriptionUnlocksNothing() = runTest {
+        respondWith(
+            HttpStatusCode.OK,
+            """{"restored":"customer","purchase_jwt":"jwt","refresh_token":"rt",""" +
+                """"sku":"monthly_03","subscription":{"isActive":false}}""",
+        )
+
+        assertEquals(
+            StripeRestore.Restored(
+                StripePurchase("jwt", "rt", "monthly_03"),
+                covered = false,
+            ),
+            client().verifyRestoreCode("alice@example.com", "123456"),
+        )
+    }
+
+    @Test
+    fun aRenewalStillSettlingIsStillARestore() = runTest {
+        respondWith(
+            HttpStatusCode.OK,
+            """{"restored":"subscription","purchase_jwt":"jwt","refresh_token":"rt",""" +
+                """"subscription":{"isActive":false,"status":"past_due"}}""",
+        )
+
+        val result = client().verifyRestoreCode("alice@example.com", "123456")
+
+        assertTrue((result as StripeRestore.Restored).covered)
     }
 
     @Test

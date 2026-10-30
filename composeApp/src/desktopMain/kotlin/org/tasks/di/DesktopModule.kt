@@ -65,6 +65,7 @@ import org.tasks.notifications.NucleusMacNotifications
 import org.tasks.notifications.NucleusWindowsNotifications
 import org.tasks.notifications.notificationSessionToken
 import org.tasks.opentasks.OpenTasksSyncer
+import org.tasks.preferences.InstallId
 import org.tasks.preferences.TasksPreferences
 import org.tasks.security.DesktopKeyProvider
 import org.tasks.security.KeyStoreEncryption
@@ -406,9 +407,10 @@ actual fun platformModule(): Module = module {
             serverEnvironment = get(),
             purchaseEntitlement = get(),
             json = get(),
+            installId = { get<InstallId>().get() },
         )
     }
-    single { SseTokenProvider() } bind FcmTokenProvider::class
+    single { SseTokenProvider(get()) } bind FcmTokenProvider::class
     single {
         SseClient(
             scope = get(),
@@ -417,7 +419,7 @@ actual fun platformModule(): Module = module {
             encryption = get<KeyStoreEncryption>(),
             environment = get(),
             httpClientFactory = get<KtorClientFactory>(),
-            token = { get<SseTokenProvider>().token },
+            token = { get<SseTokenProvider>().getToken() },
         )
     }
     single {

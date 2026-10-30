@@ -42,6 +42,7 @@ class PurchaseEntitlement(
     private val syncAdapters: SyncAdapters,
     private val publicKeyBase64: String = TASKS_PUBLIC_KEY,
     private val refreshCallTimeoutMillis: Long = REFRESH_CALL_TIMEOUT_MILLIS,
+    private val lapsedRetryIntervalSeconds: Long = LAPSED_RETRY_INTERVAL_SECONDS,
     private val readyTimeoutMillis: Long = READY_TIMEOUT_MILLIS,
 ) {
     private val storage = EncryptedStore("$dataDir/$FILE_NAME".toPath(), encryption)
@@ -50,6 +51,8 @@ class PurchaseEntitlement(
     private var refreshJob: Job? = null
 
     private var lastRefreshAttempt = 0L
+
+    private var lapsedReceipt: String? = null
 
     private val _hasPro = MutableStateFlow(false)
     val hasPro: Flow<Boolean> = _hasPro
@@ -95,6 +98,7 @@ class PurchaseEntitlement(
 
     @Serializable
     private data class CheckResponse(
+        val provider: String? = null,
         val sku: String? = null,
         val formatted_price: String? = null,
         val status: String? = null,
@@ -121,6 +125,8 @@ class PurchaseEntitlement(
 
     private enum class StoreResult { REJECTED, GRANTED_NOT_PERSISTED, STORED }
 
+    private enum class RefreshOutcome { RENEWED, LAPSED, UNANSWERED }
+
     private sealed interface RefreshResult {
         data class Success(
             val jwt: String,
@@ -142,7 +148,10 @@ class PurchaseEntitlement(
             "SXVw/oVv5itVIzZHovcXs8di7X7zeDfNYlHv+nHaGExFI7y6QxjJ/+NasQ=="
         private const val REFRESH_LEAD_SECONDS = 24 * 60 * 60L
         private const val GRACE_PERIOD_SECONDS = 7 * 24 * 60 * 60L
+        private const val PROVIDER_STRIPE = "stripe"
+        private const val PROVIDER_PLAY = "play"
         private const val RETRY_INTERVAL_SECONDS = 15 * 60L
+        private const val LAPSED_RETRY_INTERVAL_SECONDS = 24 * 60 * 60L
         private const val READY_TIMEOUT_MILLIS = 30_000L
         private const val REFRESH_CALL_TIMEOUT_MILLIS = 20_000L
 
@@ -157,19 +166,21 @@ class PurchaseEntitlement(
     suspend fun checkTier(): Boolean = checkLock.withLock {
         val stored = (load() as? LoadResult.Loaded)?.entitlement ?: return@withLock false
         val checked = callCheck(stored) ?: return@withLock false
-        val terms = checked.terms(stored.provider)
+        val provider = checked.provider.toProvider() ?: stored.provider
+        val terms = checked.terms(provider)
         val tierMoved = checked.sku != stored.sku ||
             checked.formatted_price != stored.formattedPrice
         logger.i {
-            "Check says ${checked.sku}, status=${terms?.status}, " +
+            "Check says ${checked.sku} from $provider, status=${terms?.status}, " +
                 "trialEnd=${terms?.trialEnd}, credit=${terms?.creditCents}"
         }
-        if (!tierMoved && terms == stored.terms) {
+        if (!tierMoved && terms == stored.terms && provider == stored.provider) {
             return@withLock false
         }
         val updated = stored.copy(
             sku = checked.sku,
             formattedPrice = checked.formatted_price,
+            provider = provider,
             terms = terms,
         )
         if (!storage.write(json.encodeToString(StoredEntitlement.serializer(), updated))) {
@@ -177,8 +188,15 @@ class PurchaseEntitlement(
         }
         _sku.value = updated.sku
         _formattedPrice.value = updated.formattedPrice
+        _provider.value = updated.provider
         _terms.value = updated.terms
         tierMoved
+    }
+
+    private fun String?.toProvider(): EntitlementProvider? = when (this) {
+        PROVIDER_STRIPE -> EntitlementProvider.STRIPE
+        PROVIDER_PLAY -> EntitlementProvider.PLAY
+        else -> null
     }
 
     private fun CheckResponse.terms(provider: EntitlementProvider): PurchaseTerms? {
@@ -228,11 +246,18 @@ class PurchaseEntitlement(
             scheduleRefresh(stored, exp)
             return true
         }
+        if (stored.jwt == lapsedReceipt) {
+            return true
+        }
         if (now < lastRefreshAttempt + RETRY_INTERVAL_SECONDS) {
             logger.e { "Grace period exceeded and refresh failed, syncing without pro" }
             return false
         }
-        return attemptRefresh(stored)
+        val outcome = attemptRefresh(stored)
+        if (outcome == RefreshOutcome.LAPSED) {
+            scheduleRefresh(stored, exp, interval = lapsedRetryIntervalSeconds)
+        }
+        return outcome != RefreshOutcome.UNANSWERED
     }
 
     suspend fun storeEntitlement(
@@ -241,8 +266,16 @@ class PurchaseEntitlement(
         sku: String? = null,
         formattedPrice: String? = null,
         provider: EntitlementProvider,
+        covered: Boolean = true,
     ): Boolean = checkLock.withLock {
-        grantEntitlement(jwt, refreshToken, sku, formattedPrice, provider) == StoreResult.STORED
+        grantEntitlement(
+            jwt = jwt,
+            refreshToken = refreshToken,
+            sku = sku,
+            formattedPrice = formattedPrice,
+            provider = provider,
+            covered = covered,
+        ) == StoreResult.STORED
     }
 
     private suspend fun grantEntitlement(
@@ -252,6 +285,7 @@ class PurchaseEntitlement(
         formattedPrice: String?,
         provider: EntitlementProvider,
         terms: PurchaseTerms? = null,
+        covered: Boolean = true,
     ): StoreResult {
         if (!verifySignature(jwt)) {
             logger.e { "Refusing to store entitlement that failed signature verification" }
@@ -269,44 +303,59 @@ class PurchaseEntitlement(
         if (!persisted) {
             logger.e { "Failed to persist entitlement, pro will not survive a restart" }
         }
-        val wasPro = _hasPro.getAndUpdate { true }
+        lapsedReceipt = if (covered) null else jwt
+        val wasPro = if (covered) _hasPro.getAndUpdate { true } else _hasPro.value
         _sku.value = sku
         _formattedPrice.value = formattedPrice
         _provider.value = provider
         _terms.value = terms
-        if (!wasPro) {
+        if (covered && !wasPro) {
             syncAdapters.sync(SyncSource.PURCHASE_COMPLETED)
         }
-        payload.exp?.let { scheduleRefresh(entitlement, it) }
+        payload.exp?.let {
+            scheduleRefresh(
+                entitlement = entitlement,
+                exp = it,
+                interval = if (covered) RETRY_INTERVAL_SECONDS else lapsedRetryIntervalSeconds,
+            )
+        }
         return if (persisted) StoreResult.STORED else StoreResult.GRANTED_NOT_PERSISTED
     }
 
-    private fun scheduleRefresh(entitlement: StoredEntitlement, exp: Long) {
+    private fun scheduleRefresh(
+        entitlement: StoredEntitlement,
+        exp: Long,
+        interval: Long = RETRY_INTERVAL_SECONDS,
+    ) {
         refreshJob?.cancel()
         refreshJob = scope.launch {
+            var wait = interval
             while (true) {
                 val now = currentTimeMillis() / 1000
-                val refreshAt = maxOf(
-                    exp - REFRESH_LEAD_SECONDS,
-                    lastRefreshAttempt + RETRY_INTERVAL_SECONDS,
-                )
+                val refreshAt = maxOf(exp - REFRESH_LEAD_SECONDS, lastRefreshAttempt + wait)
                 if (refreshAt > now) {
                     delay((refreshAt - now) * 1000)
                 }
-                val answered = checkLock.withLock {
+                val outcome = checkLock.withLock {
                     attemptRefresh(entitlement).also {
-                        if (!it && currentTimeMillis() / 1000 >= exp + GRACE_PERIOD_SECONDS) {
+                        if (it == RefreshOutcome.UNANSWERED &&
+                            currentTimeMillis() / 1000 >= exp + GRACE_PERIOD_SECONDS
+                        ) {
                             logger.i { "Grace period exceeded, dropping to free tier" }
                             _hasPro.value = false
                         }
                     }
                 }
-                if (answered) break
+                when (outcome) {
+                    RefreshOutcome.RENEWED -> break
+                    RefreshOutcome.LAPSED -> wait = lapsedRetryIntervalSeconds
+                    RefreshOutcome.UNANSWERED -> Unit
+                }
             }
         }
     }
 
-    private suspend fun attemptRefresh(entitlement: StoredEntitlement): Boolean {
+    private suspend fun attemptRefresh(entitlement: StoredEntitlement): RefreshOutcome {
         lastRefreshAttempt = currentTimeMillis() / 1000
         return when (val result = callRefresh(entitlement.refreshToken, entitlement.provider)) {
             is RefreshResult.Success -> {
@@ -320,25 +369,19 @@ class PurchaseEntitlement(
                 )
                 if (granted == StoreResult.REJECTED) {
                     logger.e { "Refreshed entitlement was rejected, keeping the stored one" }
-                    false
+                    RefreshOutcome.UNANSWERED
                 } else {
                     logger.i { "Purchase entitlement refreshed" }
-                    true
+                    RefreshOutcome.RENEWED
                 }
             }
             RefreshResult.Revoked -> {
-                logger.i { "Subscription no longer active, clearing entitlement" }
-                if (!storage.delete()) {
-                    logger.e { "Failed to clear revoked entitlement, retrying on next launch" }
-                }
+                logger.i { "Subscription is not covering now, locking but keeping the receipt" }
+                lapsedReceipt = entitlement.jwt
                 _hasPro.value = false
-                _sku.value = null
-                _formattedPrice.value = null
-                _provider.value = null
-                _terms.value = null
-                true
+                RefreshOutcome.LAPSED
             }
-            RefreshResult.Failed -> false
+            RefreshResult.Failed -> RefreshOutcome.UNANSWERED
         }
     }
 
