@@ -18,15 +18,28 @@ import org.tasks.data.sql.QueryTemplate
  */
 data class PickSearchFilter(
     override val title: String,
-    // The selected filter's full clause, joins and all: [Filter.sql] is the
-    // text the list query embeds in WHERE position ("WHERE (...)" or
-    // "<JOIN> WHERE (...)").
-    val baseSql: String,
+    // The selected filter itself: the query is narrowed AROUND its SQL, but
+    // the pane's ordering must keep following the list (see
+    // [Filter.sortIdentity]) - a wrapper that presents its own anonymous
+    // identity makes the query builder fall back to the generic sort.
+    val base: Filter,
     val query: String,
     val excludedTaskIds: Set<Long> = emptySet(),
 ) : Filter() {
+    // The selected filter's full clause, joins and all, captured once:
+    // [Filter.sql] is the text the list query embeds in WHERE position
+    // ("WHERE (...)" or "<JOIN> WHERE (...)").
+    private val baseSql: String = base.sql.orEmpty()
+
     override val sql: String
         get() = pickSearchSql(baseSql, query, excludedTaskIds)
+
+    override val sortIdentity: Filter
+        get() = base
+
+    override fun supportsManualSort(): Boolean = base.supportsManualSort()
+
+    override fun supportsSorting(): Boolean = base.supportsSorting()
 
     override fun areItemsTheSame(other: FilterListItem): Boolean {
         return other is PickSearchFilter

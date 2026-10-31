@@ -92,7 +92,7 @@ open class TaskListViewModel(
         base, query, excluded ->
         PickSearchFilter(
             title = base.title,
-            baseSql = base.sql.orEmpty(),
+            base = base,
             query = query,
             excludedTaskIds = excluded,
         )
