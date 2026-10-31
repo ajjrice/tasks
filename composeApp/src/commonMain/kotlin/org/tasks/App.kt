@@ -690,6 +690,27 @@ fun App(
             // (see [TaskListPane]), which hides its own search bar while
             // pick mode runs.
             var pickQuery by rememberSaveable { mutableStateOf("") }
+            // Focusing the find field widens the pick search to My Tasks:
+            // typing a search means the destination is not visible in the
+            // currently selected list. [pickExpandedToAll] remembers that
+            // widening and [pickSnapshotFilter] remembers the filter that
+            // was selected when the panel OPENED, so any cancel path (X,
+            // Esc, clearing the find field, closing the edit pane) restores
+            // exactly that list - even if the drawer was used to poke
+            // around while searching.
+            var pickExpandedToAll by rememberSaveable { mutableStateOf(false) }
+            var pickSnapshotFilter by remember { mutableStateOf<Filter?>(null) }
+
+            fun endPick() {
+                pickTargetTaskId = null
+                pickedExistingTask = null
+                pickQuery = ""
+                if (pickExpandedToAll) {
+                    pickExpandedToAll = false
+                    pickSnapshotFilter?.let { taskListViewModel?.setFilter(it) }
+                    pickSnapshotFilter = null
+                }
+            }
 
             // The pick only exists for the edit pane it was started from: every path that closes
             // that pane (the drawer's list switch, the pane's close button, a restored back
@@ -699,11 +720,7 @@ fun App(
             // filter class of regression from upstream PR #4803. Reset the state so the pane
             // returns to the ordinary list.
             LaunchedEffect(hasDetailOpen) {
-                if (!hasDetailOpen && pickTargetTaskId != null) {
-                    pickTargetTaskId = null
-                    pickedExistingTask = null
-                    pickQuery = ""
-                }
+                if (!hasDetailOpen) endPick()
             }
 
             // The filter is passed in rather than read from taskListState: a caller that just
@@ -985,11 +1002,7 @@ fun App(
                                     pickQuery = ""
                                 },
                                 pickQuery = pickQuery,
-                                onPickModeBack = {
-                                    pickTargetTaskId = null
-                                    pickedExistingTask = null
-                                    pickQuery = ""
-                                },
+                                onPickModeBack = { endPick() },
                                 onCreateTask = onCreateTask,
                                 onMenuClick = onMenuClick,
                             )
@@ -1025,7 +1038,37 @@ fun App(
                                 onListsChanged = { drawerViewModel?.updateFilters() },
                                 onClose = { closeDetail() },
                                 pickedExistingTask = pickedExistingTask,
-                                onPickExistingOpen = { taskId -> pickTargetTaskId = taskId },
+                                onPickExistingOpen = { taskId ->
+                                    if (pickTargetTaskId == null) {
+                                        // Panel just opened: snapshot the
+                                        // selected filter for the cancel-
+                                        // time restore and arm the find-
+                                        // field widening. A later re-open
+                                        // (keystroke re-asserting pick mode)
+                                        // keeps the original snapshot.
+                                        pickSnapshotFilter = currentTaskListState?.filter
+                                        pickExpandedToAll = false
+                                    }
+                                    pickTargetTaskId = taskId
+                                },
+                                onPickFindFieldFocused = {
+                                    if (pickTargetTaskId != null && !pickExpandedToAll) {
+                                        // Reuse the drawer's own My Tasks
+                                        // filter instance so the drawer's
+                                        // selection highlight follows the
+                                        // switch exactly.
+                                        val myTasks = drawerViewModel?.state?.value?.drawerItems
+                                            ?.filterIsInstance<DrawerItem.Filter>()
+                                            ?.firstOrNull { it.filter is MyTasksFilter }
+                                            ?.filter
+                                        if (myTasks != null &&
+                                            currentTaskListState?.filter?.let { !it.areItemsTheSame(myTasks) } == true
+                                        ) {
+                                            taskListViewModel?.setFilter(myTasks)
+                                            pickExpandedToAll = true
+                                        }
+                                    }
+                                },
                                 onPickQueryChange = { query ->
                                     pickQuery = query
                                     // A cleared find field with no pick in flight leaves
@@ -1033,14 +1076,31 @@ fun App(
                                     // filter. (A pick still shows in the field, so it keeps
                                     // pick mode alive until it is committed or cleared.)
                                     if (query.isEmpty() && pickedExistingTask == null) {
-                                        pickTargetTaskId = null
+                                        endPick()
                                     }
                                 },
                                 onClearPickedExisting = { pickedExistingTask = null },
-                                onPickExistingCancel = {
-                                    pickTargetTaskId = null
-                                    pickedExistingTask = null
-                                    pickQuery = ""
+                                onPickExistingCancel = { endPick() },
+                                onMoveIntoCommitted = { listUuid, _, chain ->
+                                    // The move is committed: the cancel-time
+                                    // restore must not clobber the new state.
+                                    pickExpandedToAll = false
+                                    pickSnapshotFilter = null
+                                    // Show the new state: the list pane becomes
+                                    // the task's new list, reusing the drawer's
+                                    // own filter instance so its highlight
+                                    // follows.
+                                    val targetFilter = drawerViewModel?.state?.value?.drawerItems
+                                        ?.filterIsInstance<DrawerItem.Filter>()
+                                        ?.firstOrNull { (it.filter as? CaldavFilter)?.uuid == listUuid }
+                                        ?.filter
+                                    if (targetFilter != null) {
+                                        taskListViewModel?.setFilter(targetFilter)
+                                    }
+                                    // Unfold the picked task and its ancestors
+                                    // so the moved task is visible and not left
+                                    // behind a folded row.
+                                    chain.forEach { taskListViewModel?.toggleSubtasks(it, false) }
                                 },
                             )
                         } else {
@@ -1955,9 +2015,17 @@ private fun TaskEditEntry(
     // Move-into pick state round-trip (owned in App, see the pick state there).
     pickedExistingTask: PickedTask? = null,
     onPickExistingOpen: (taskId: Long) -> Unit = {},
+    onPickFindFieldFocused: () -> Unit = {},
     onPickQueryChange: (String) -> Unit = {},
     onClearPickedExisting: () -> Unit = {},
     onPickExistingCancel: () -> Unit = {},
+    // The move into an existing task has committed. [chain] is the picked
+    // task's own id plus its ancestors up to the root, in that order: the
+    // App scope switches the list to the target's list and expands the
+    // chain so the just-moved task is visible, not hidden behind folded
+    // rows. (Configurable later - see the feature's "show the new state"
+    // default.)
+    onMoveIntoCommitted: (listUuid: String, targetId: Long, chain: List<Long>) -> Unit = { _, _, _ -> },
 ) {
     val taskEditViewModel = koinViewModel<TaskEditViewModel> {
         org.koin.core.parameter.parametersOf(destination)
@@ -1976,9 +2044,11 @@ private fun TaskEditEntry(
         onClose = onClose,
         pickedExistingTask = pickedExistingTask,
         onPickExistingOpen = onPickExistingOpen,
+        onPickFindFieldFocused = onPickFindFieldFocused,
         onPickQueryChange = onPickQueryChange,
         onClearPickedExisting = onClearPickedExisting,
         onPickExistingCancel = onPickExistingCancel,
+        onMoveIntoCommitted = onMoveIntoCommitted,
     )
 
     NewListDialogHost(
