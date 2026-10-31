@@ -32,6 +32,7 @@ class MoveIntoTaskPanelTest {
     private var cancelled = 0
     private var clearedPicked = 0
     private var pickOpened = 0
+    private var fieldFocus = 0
 
     @Composable
     private fun panel(
@@ -45,6 +46,7 @@ class MoveIntoTaskPanelTest {
             working = working,
             pickedTask = effectivePick,
             onPickExistingOpen = { pickOpened++ },
+            onFindFieldFocus = { fieldFocus++ },
             onFindQueryChange = { queries.add(it) },
             onClearPicked = {
                 clearedPicked++
@@ -54,6 +56,23 @@ class MoveIntoTaskPanelTest {
             onAcceptExisting = { acceptedExisting.add(it) },
             onCancel = { cancelled++ },
         )
+    }
+
+    @Test
+    fun openingThePanelDoesNotFocusTheFindField() = runComposeUiTest {
+        setContent { panel() }
+        // No auto-focus: the list pane keeps the list the user was looking
+        // at until the field is actually clicked.
+        assertEquals(0, fieldFocus)
+    }
+
+    @Test
+    fun clickingTheFindFieldReportsItsFocus() = runComposeUiTest {
+        setContent { panel() }
+        onNodeWithText("Find existing task...", substring = false).performClick()
+        // The focus is what widens the list pane's search to My Tasks: the
+        // callback fires only once the field actually gains focus.
+        assertEquals(1, fieldFocus)
     }
 
     @Test
@@ -138,11 +157,13 @@ class MoveIntoTaskPanelTest {
         setContent { panel(pickedTask = PickedTask(id = 42, title = "Big project")) }
         // The field's declared IME action is Done; driving it directly instead of
         // synthesising an Enter key avoids the test dispatcher's key-state clash
-        // on a freshly auto-focused field.
+        // on an unfocused field.
         onNodeWithText("Big project", substring = false).performImeAction()
         assertEquals(listOf(42L), acceptedExisting)
 
         setContent { panel() }
+        // Keys route to the focused field: click the title field, then Escape.
+        onNodeWithText("Create new task...", substring = false).performClick()
         onNodeWithText("Create new task...", substring = false)
             .performKeyInput { keyDown(Key.Escape) }
         assertEquals(1, cancelled)

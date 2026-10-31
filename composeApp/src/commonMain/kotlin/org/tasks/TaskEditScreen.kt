@@ -124,9 +124,17 @@ fun TaskEditScreen(
     // so the list pane and this screen share one source of truth.
     pickedExistingTask: PickedTask? = null,
     onPickExistingOpen: (taskId: Long) -> Unit = {},
+    onPickFindFieldFocused: () -> Unit = {},
     onPickQueryChange: (String) -> Unit = {},
     onClearPickedExisting: () -> Unit = {},
     onPickExistingCancel: () -> Unit = {},
+    // The move into an existing task has committed. [chain] is the picked
+    // task's own id plus its ancestors up to the root, in that order: the
+    // App scope switches the list to the target's list and expands the
+    // chain so the just-moved task is visible, not hidden behind folded
+    // rows. (Configurable later - see the feature's "show the new state"
+    // default.)
+    onMoveIntoCommitted: (listUuid: String, targetId: Long, chain: List<Long>) -> Unit = { _, _, _ -> },
 ) {
     val state by viewModel.state.collectAsState()
     val currentOnClose by rememberUpdatedState(onClose)
@@ -392,6 +400,7 @@ fun TaskEditScreen(
                                 keyboardController = keyboardController,
                                 pickedTask = pickedExistingTask,
                                 onPickExistingOpen = { onPickExistingOpen(state.task.id) },
+                                onFindFieldFocus = onPickFindFieldFocused,
                                 onFindQueryChange = onPickQueryChange,
                                 onClearPicked = onClearPickedExisting,
                                 onAcceptNew = { title ->
@@ -438,11 +447,16 @@ fun TaskEditScreen(
                                             var cursor = targetId
                                             var steps = 0
                                             var rejected = false
+                                            // The walked chain doubles as the
+                                            // expansion list for the commit:
+                                            // target first, then its ancestors.
+                                            val chain = mutableListOf<Long>()
                                             while (cursor != 0L && steps < 1000) {
                                                 if (cursor == state.task.id) {
                                                     rejected = true
                                                     break
                                                 }
+                                                chain.add(cursor)
                                                 cursor = taskDao.fetch(cursor)?.parent ?: 0L
                                                 steps++
                                             }
@@ -463,6 +477,14 @@ fun TaskEditScreen(
                                                 // and the refresh broadcast all happen as they
                                                 // would for a drag-and-drop move.
                                                 taskMover.move(state.task.id, listUuid, targetId)
+                                                // Show the new state: the list
+                                                // becomes the target's list and
+                                                // its chain unfolds so the moved
+                                                // task is visible. Runs before
+                                                // the cancel so the cancel's
+                                                // filter restore does not clobber
+                                                // it.
+                                                onMoveIntoCommitted(listUuid, targetId, chain)
                                                 showMakeParentPanel = false
                                                 onPickExistingCancel()
                                             }

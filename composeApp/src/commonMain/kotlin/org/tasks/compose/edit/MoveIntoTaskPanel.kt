@@ -23,8 +23,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -50,10 +49,14 @@ import tasks.kmp.generated.resources.make_parent_task_title
  *   opens, the list pane is already in pick mode for the edited task (row
  *   taps land the pick instead of opening the task, and the edited task's
  *   subtree is excluded before the first keystroke), so a candidate can be
- *   chosen by clicking straight in the list. Typing into the field (via
- *   [onFindQueryChange]) live-filters those rows, WITHIN the list currently
- *   selected in the drawer: switching lists there narrows the search to that
- *   list's scope, and My Tasks widens it back out. Tapping a result row (or
+ *   chosen by clicking straight in the list. The field is deliberately NOT
+ *   auto-focused: while the panel sits there unfocused, the list pane keeps
+ *   the list the user was already looking at. Clicking into the field is
+ *   what says "I can't see the destination, search for it" - that focus
+ *   reports through [onFindFieldFocus] and widens the list pane's search to
+ *   My Tasks. Once widened, typing (via [onFindQueryChange]) live-filters
+ *   those rows, and the drawer narrows the scope again: switching lists
+ *   there scopes the search to that list's scope. Tapping a result row (or
  *   clicking any row) lands the pick here: the field then shows the picked
  *   task's title and the floppy commits it; typing into it again clears the
  *   pick and resumes searching.
@@ -75,6 +78,10 @@ fun MoveIntoTaskPanel(
     keyboardController: SoftwareKeyboardController? = null,
     pickedTask: PickedTask?,
     onPickExistingOpen: () -> Unit = {},
+    // The find field gained user focus: the list pane widens its search to
+    // My Tasks (see the class doc). The panel does not decide that - the
+    // App scope owns the filter and its cancel-time restore.
+    onFindFieldFocus: () -> Unit = {},
     onFindQueryChange: (String) -> Unit = {},
     onClearPicked: () -> Unit = {},
     onAcceptNew: (title: String) -> Unit,
@@ -84,9 +91,9 @@ fun MoveIntoTaskPanel(
     var newTitle by rememberSaveable { mutableStateOf("") }
     // The find field's text. While a pick is shown the field displays the
     // picked title instead, and editing it clears the pick (see below).
+    // No auto-focus: the list pane keeps its current list until the user
+    // clicks into the field (see the class doc).
     var findQuery by rememberSaveable { mutableStateOf("") }
-    val findFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { findFocusRequester.requestFocus() }
     // Mutual exclusion, pick side: landing a pick clears any new-title draft,
     // so the floppy's destination is unambiguous.
     LaunchedEffect(pickedTask) {
@@ -138,7 +145,9 @@ fun MoveIntoTaskPanel(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .focusRequester(findFocusRequester)
+                        .onFocusChanged { focusState ->
+                            if (focusState.isFocused) onFindFieldFocus()
+                        }
                         .onPreviewKeyEvent { event ->
                             when {
                                 event.key == Key.Enter -> {
