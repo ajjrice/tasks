@@ -138,6 +138,12 @@ open class TaskListViewModel(
      * [State.searchQuery]) replaces the selected filter with a search over all
      * tasks; a blank *non-null* query deliberately means "My Tasks".
      *
+     * Pick-parent mode always searches all tasks - even with a blank query,
+     * before the user has typed anything - and always applies the subtree
+     * exclusion: in the default "everything" view the moved task and its
+     * subtree must not be visible as pick candidates, not only once text has
+     * been entered.
+     *
      * Callers that don't want search semantics must pass `null`. The drawer's
      * raw query string is `""`-initialised, so the UI wiring has to normalise
      * it with `ifBlank { null }` before it reaches [setSearchQuery] - passing
@@ -146,6 +152,8 @@ open class TaskListViewModel(
      * introduced by the drawer search wiring, upstream PR #4803).
      */
     internal fun queryFilterFor(queriedState: State): Filter = when {
+        queriedState.pickParentFor != null ->
+            createSearchFilter(queriedState.searchQuery.orEmpty(), queriedState.pickParentExcluded)
         queriedState.searchQuery == null -> queriedState.filter
         queriedState.searchQuery.isBlank() -> MyTasksFilter(title = "My Tasks")
         else -> createSearchFilter(queriedState.searchQuery, queriedState.pickParentExcluded)
