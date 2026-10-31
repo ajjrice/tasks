@@ -54,3 +54,13 @@ class TaskRequests {
         private const val OPEN_TIMEOUT_MS = 5_000L
     }
 }
+
+/**
+ * The existing task picked as a move destination by the edit pane's
+ * "move into another task" panel: id plus the title the panel displays in
+ * its field. Row ids are stable enough that the title is display-only.
+ */
+data class PickedTask(
+    val id: Long,
+    val title: String,
+)

@@ -35,6 +35,13 @@ open class Field(expression: String) : DBObject(expression) {
         }
     }
 
+    fun notIn(entries: List<*>): Criterion {
+        val field = this
+        return object : Criterion(Operator.`in`) {
+            override fun populate() = "$field NOT IN (${entries.joinToString(",")})"
+        }
+    }
+
     fun toStringInSelect(): String {
         val sb = StringBuilder(expression)
         if (hasAlias()) {

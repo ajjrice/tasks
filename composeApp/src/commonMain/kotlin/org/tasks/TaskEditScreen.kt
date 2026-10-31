@@ -54,7 +54,7 @@ import org.tasks.compose.edit.DescriptionRow
 import org.tasks.compose.edit.DiscardChangesDialog
 import org.tasks.compose.edit.DueDateRow
 import org.tasks.compose.edit.ListPickerDialog
-import org.tasks.compose.edit.MakeParentTaskPanel
+import org.tasks.compose.edit.MoveIntoTaskPanel
 import org.tasks.compose.edit.MarkdownEditField
 import org.tasks.compose.edit.PrioritySection
 import org.tasks.compose.edit.RecurrencePickerDialog
@@ -118,6 +118,14 @@ fun TaskEditScreen(
     filterTint: Int = 0,
     onOpenSubtask: (taskId: Long, remoteId: String, isDraft: Boolean) -> Unit = { _, _, _ -> },
     onClose: () -> Unit,
+    // Move-into-another-task wiring (see App's pick state): the panel's
+    // "existing task" field opens the list pane's search in pick mode for the
+    // task being edited, and the pick/clear callbacks round-trip through App
+    // so the list pane and this screen share one source of truth.
+    pickedExistingTask: PickedTask? = null,
+    onPickExistingOpen: (taskId: Long) -> Unit = {},
+    onClearPickedExisting: () -> Unit = {},
+    onPickExistingCancel: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val currentOnClose by rememberUpdatedState(onClose)
@@ -365,11 +373,14 @@ fun TaskEditScreen(
                             ),
                     ) {
                         if (showMakeParentPanel) {
-                            MakeParentTaskPanel(
+                            MoveIntoTaskPanel(
                                 modifier = Modifier.padding(bottom = 16.dp),
                                 working = makeParentWorking,
                                 keyboardController = keyboardController,
-                                onAccept = { title ->
+                                pickedTask = pickedExistingTask,
+                                onPickExistingClick = { onPickExistingOpen(state.task.id) },
+                                onClearPicked = onClearPickedExisting,
+                                onAcceptNew = { title ->
                                     makeParentWorking = true
                                     makeParentScope.launch {
                                         try {
@@ -395,9 +406,35 @@ fun TaskEditScreen(
                                         }
                                     }
                                 },
+                                onAcceptExisting = { targetId ->
+                                    makeParentWorking = true
+                                    makeParentScope.launch {
+                                        try {
+                                            val calendars = caldavDao.getCalendars(listOf(targetId))
+                                            val listUuid = calendars.firstOrNull()?.uuid
+                                            if (listUuid == null) {
+                                                log.e { "No calendar for picked task $targetId" }
+                                            } else {
+                                                // The app's native parent-change path: same
+                                                // TaskMover.move every other move uses, so
+                                                // list, CalDAV remote parent, dirty marking
+                                                // and the refresh broadcast all happen as they
+                                                // would for a drag-and-drop move.
+                                                taskMover.move(state.task.id, listUuid, targetId)
+                                                showMakeParentPanel = false
+                                                onPickExistingCancel()
+                                            }
+                                            makeParentWorking = false
+                                        } catch (e: Exception) {
+                                            log.e(e) { "Failed to move into existing task" }
+                                            makeParentWorking = false
+                                        }
+                                    }
+                                },
                                 onCancel = {
                                     makeParentWorking = false
                                     showMakeParentPanel = false
+                                    onPickExistingCancel()
                                 },
                             )
                         }

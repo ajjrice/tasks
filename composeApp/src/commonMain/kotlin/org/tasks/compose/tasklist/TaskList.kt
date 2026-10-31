@@ -52,6 +52,9 @@ internal fun TaskList(
     onToggleSubtasks: (Long, Boolean) -> Unit = { _, _ -> },
     onFilterClick: (Filter) -> Unit = {},
     is24Hour: Boolean = false,
+    // The move-into panel's picked destination row, highlighted while the
+    // panel is open. Null outside that flow, so rows render exactly as before.
+    highlightedTaskId: Long? = null,
 ) {
     val dateFormatter = rememberDateFormatter(is24Hour)
     val subtaskTrees = koinInject<SubtaskTreeRegistry>()
@@ -95,6 +98,7 @@ internal fun TaskList(
                 onToggleComplete = { onCompleteTask(task, !task.isCompleted) },
                 onToggleSubtasks = { onToggleSubtasks(task.id, !task.isCollapsed) },
                 onFilterClick = onFilterClick,
+                highlighted = highlightedTaskId != null && task.id == highlightedTaskId,
             )
         }
     }

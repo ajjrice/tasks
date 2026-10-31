@@ -82,8 +82,8 @@ open class TaskListViewModel(
     private val headerFormatter: HeaderFormatter,
     private val queryPreferences: QueryPreferences = DefaultQueryPreferences(),
     private val isPerListSortEnabled: Boolean = false,
-    private val createSearchFilter: (String) -> Filter = { query ->
-        SearchFilter(title = query, query = query)
+    private val createSearchFilter: (String, Set<Long>) -> Filter = { query, excluded ->
+        SearchFilter(title = query, query = query, excludedTaskIds = excluded)
     },
     refreshFlow: Flow<Unit> = emptyFlow(),
 ) : ViewModel() {
@@ -92,6 +92,11 @@ open class TaskListViewModel(
         val filter: Filter = EmptyFilter(),
         val now: Long = currentTimeMillis(),
         val searchQuery: String? = null,
+        // Non-null while the edit pane's "move into another task" panel is
+        // choosing an existing task: the search field then hides this task and
+        // its whole subtree so it cannot be picked as its own ancestor.
+        val pickParentFor: Long? = null,
+        val pickParentExcluded: Set<Long> = emptySet(),
         val tasks: TasksResults = TasksResults.Loading,
         val syncOngoing: Boolean = false,
         val collapsed: Set<Long> = setOf(SectionedDataSource.HEADER_COMPLETED),
@@ -109,6 +114,26 @@ open class TaskListViewModel(
     }
 
     /**
+     * Enters or leaves pick-parent mode. While active, task search excludes
+     * [taskId] and every descendant, computed level-by-level with
+     * [TaskDao.getChildren].
+     */
+    suspend fun setPickParent(taskId: Long?) {
+        if (taskId == null) {
+            _state.update { it.copy(pickParentFor = null, pickParentExcluded = emptySet()) }
+            return
+        }
+        val excluded = mutableSetOf(taskId)
+        var frontier = listOf(taskId)
+        while (frontier.isNotEmpty()) {
+            val next = taskDao.getChildren(frontier).filterNot(excluded::contains)
+            excluded += next
+            frontier = next
+        }
+        _state.update { it.copy(pickParentFor = taskId, pickParentExcluded = excluded) }
+    }
+
+    /**
      * The filter the list query actually uses. An active search (non-blank
      * [State.searchQuery]) replaces the selected filter with a search over all
      * tasks; a blank *non-null* query deliberately means "My Tasks".
@@ -123,7 +148,7 @@ open class TaskListViewModel(
     internal fun queryFilterFor(queriedState: State): Filter = when {
         queriedState.searchQuery == null -> queriedState.filter
         queriedState.searchQuery.isBlank() -> MyTasksFilter(title = "My Tasks")
-        else -> createSearchFilter(queriedState.searchQuery)
+        else -> createSearchFilter(queriedState.searchQuery, queriedState.pickParentExcluded)
     }
 
     fun invalidate() {
