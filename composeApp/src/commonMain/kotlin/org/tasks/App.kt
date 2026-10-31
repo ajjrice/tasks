@@ -236,6 +236,7 @@ import org.tasks.filters.FilterProvider.Companion.REQUEST_NEW_TAGS
 import org.tasks.filters.key
 import org.tasks.filters.FilterPreferenceCodec
 import org.tasks.filters.MyTasksFilter
+import org.tasks.filters.PickAllFilter
 import org.tasks.filters.SearchFilter
 import org.tasks.preferences.TasksPreferences
 import org.tasks.filters.TagFilter
@@ -1052,20 +1053,18 @@ fun App(
                                     pickTargetTaskId = taskId
                                 },
                                 onPickFindFieldFocused = {
-                                    if (pickTargetTaskId != null && !pickExpandedToAll) {
-                                        // Reuse the drawer's own My Tasks
-                                        // filter instance so the drawer's
-                                        // selection highlight follows the
-                                        // switch exactly.
-                                        val myTasks = drawerViewModel?.state?.value?.drawerItems
-                                            ?.filterIsInstance<DrawerItem.Filter>()
-                                            ?.firstOrNull { it.filter is MyTasksFilter }
-                                            ?.filter
-                                        if (myTasks != null &&
-                                            currentTaskListState?.filter?.let { !it.areItemsTheSame(myTasks) } == true
-                                        ) {
-                                            taskListViewModel?.setFilter(myTasks)
-                                            pickExpandedToAll = true
+                                    if (pickTargetTaskId != null && !pickExpandedToAll &&
+                                        currentTaskListState?.filter !is PickAllFilter
+                                    ) {
+                                        // Widen the pane to every active task at
+                                        // every depth: the pick has to be able
+                                        // to target subtasks, which the My Tasks
+                                        // scope (PARENT = 0) never shows.
+                                        chromeScope.launch {
+                                            if (currentTaskListState?.filter !is PickAllFilter) {
+                                                taskListViewModel?.setFilter(PickAllFilter.create())
+                                                pickExpandedToAll = true
+                                            }
                                         }
                                     }
                                 },
