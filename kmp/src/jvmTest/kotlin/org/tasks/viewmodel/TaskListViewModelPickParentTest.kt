@@ -18,18 +18,18 @@ import org.tasks.data.dao.TaskDao
 import org.tasks.data.entity.CaldavAccount
 import org.tasks.data.entity.CaldavCalendar
 import org.tasks.filters.CaldavFilter
-import org.tasks.filters.SearchFilter
+import org.tasks.filters.PickSearchFilter
 import org.tasks.preferences.DataStoreQueryPreferences
 import org.tasks.preferences.TasksPreferences
 
 /**
  * Pins the pick-parent contract in [TaskListViewModel.queryFilterFor] that the
  * edit pane's "move into another task" panel relies on: while pick mode is
- * active the list shows a search over ALL tasks with the picked-into task and
- * its subtree excluded - even before the user has typed anything into the
- * panel's find field (a blank query in pick mode must not fall through to
- * "My Tasks" or the selected filter, or the subtree would be visible as pick
- * candidates).
+ * active the list shows the selected filter's scope narrowed by the panel's
+ * live search, with the picked-into task and its subtree excluded - even
+ * before the user has typed anything (a blank query in pick mode must not
+ * fall through to "My Tasks" or drop the exclusion, or the subtree would be
+ * visible as pick candidates).
  */
 class TaskListViewModelPickParentTest {
     companion object {
@@ -74,7 +74,7 @@ class TaskListViewModelPickParentTest {
     }
 
     @Test
-    fun pickModeSearchesAllTasksEvenWithABlankQuery() = runTest {
+    fun pickModeKeepsTheSelectedFilterInScopeEvenWithABlankQuery() = runTest {
         val vm = viewModel()
         val caldav = caldavFilter()
         vm.setFilter(caldav)
@@ -83,23 +83,48 @@ class TaskListViewModelPickParentTest {
         // search query: before the first keystroke the query is still null.
         val beforeTyping = vm.queryFilterFor(vm.state.value)
         assertTrue(
-            "expected a SearchFilter the moment pick mode starts, got $beforeTyping",
-            beforeTyping is SearchFilter,
+            "expected a PickSearchFilter the moment pick mode starts, got $beforeTyping",
+            beforeTyping is PickSearchFilter,
         )
-        assertEquals(42L, (beforeTyping as SearchFilter).excludedTaskIds.single())
+        val pick = beforeTyping as PickSearchFilter
+        assertEquals(setOf(42L), pick.excludedTaskIds)
+        // The drawer's selection stays in play: the base scope is preserved,
+        // not replaced by an all-task search.
+        assertEquals(caldav.sql, pick.baseSql)
+        assertEquals("", pick.query)
 
         // A blank query (the find field, untouched) keeps the same exclusion:
         // the subtree must be hidden before any text is typed, not only after.
         vm.setSearchQuery("")
-        val duringPick = vm.queryFilterFor(vm.state.value) as SearchFilter
+        val duringPick = vm.queryFilterFor(vm.state.value) as PickSearchFilter
         assertEquals("", duringPick.query)
         assertEquals(setOf(42L), duringPick.excludedTaskIds)
+        assertEquals(caldav.sql, duringPick.baseSql)
 
-        // And a typed query filters within the same exclusion.
+        // And a typed query filters within the same base scope and exclusion.
         vm.setSearchQuery(TEST_SEARCH_QUERY)
-        val withQuery = vm.queryFilterFor(vm.state.value) as SearchFilter
+        val withQuery = vm.queryFilterFor(vm.state.value) as PickSearchFilter
         assertEquals(TEST_SEARCH_QUERY, withQuery.query)
         assertEquals(setOf(42L), withQuery.excludedTaskIds)
+        assertEquals(caldav.sql, withQuery.baseSql)
+    }
+
+    @Test
+    fun switchingTheDrawerFilterWhilePickingReScopesTheSearch() = runTest {
+        val vm = viewModel()
+        val caldav = caldavFilter()
+        vm.setFilter(caldav)
+        vm.setPickParent(42L)
+        vm.setSearchQuery(TEST_SEARCH_QUERY)
+
+        // The drawer's list switch goes through setFilter while pick mode is
+        // active: the pick search must re-scope to the new base filter.
+        val myTasks = org.tasks.filters.MyTasksFilter(title = "My Tasks")
+        vm.setFilter(myTasks)
+        val reScoped = vm.queryFilterFor(vm.state.value) as PickSearchFilter
+        assertEquals(TEST_SEARCH_QUERY, reScoped.query)
+        assertEquals(myTasks.sql, reScoped.baseSql)
+        assertEquals(setOf(42L), reScoped.excludedTaskIds)
     }
 
     @Test
@@ -110,7 +135,7 @@ class TaskListViewModelPickParentTest {
 
         vm.setPickParent(42L)
         vm.setSearchQuery("")
-        assertTrue(vm.queryFilterFor(vm.state.value) is SearchFilter)
+        assertTrue(vm.queryFilterFor(vm.state.value) is PickSearchFilter)
 
         // The UI leaves pick mode with setPickParent(null) + setSearchQuery(null).
         vm.setPickParent(null)

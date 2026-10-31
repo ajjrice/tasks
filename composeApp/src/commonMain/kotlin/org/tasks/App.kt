@@ -770,7 +770,10 @@ fun App(
                         if (materialDrawerState.isOpen) {
                             chromeScope.launch { materialDrawerState.close() }
                         }
-                        closeDetail()
+                        // Move-into pick: the drawer narrows the pick search, so the edit pane
+                        // (with its open panel) stays and the new selection scopes the results.
+                        // Every other drawer choice closes the detail as before.
+                        if (pickTargetTaskId == null) closeDetail()
                     }
                     is DrawerItem.Header -> drawerViewModel?.toggleCollapsed(item.header)
                     is DrawerItem.SignIn -> {}

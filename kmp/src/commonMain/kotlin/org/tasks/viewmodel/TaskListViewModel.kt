@@ -31,6 +31,7 @@ import org.tasks.filters.EmptyFilter
 import org.tasks.filters.Filter
 import org.tasks.filters.FilterImpl
 import org.tasks.filters.MyTasksFilter
+import org.tasks.filters.PickSearchFilter
 import org.tasks.filters.SearchFilter
 import org.tasks.filters.key
 import org.tasks.kmp.org.tasks.time.DateFormatter
@@ -85,6 +86,17 @@ open class TaskListViewModel(
     private val createSearchFilter: (String, Set<Long>) -> Filter = { query, excluded ->
         SearchFilter(title = query, query = query, excludedTaskIds = excluded)
     },
+    // Pick mode keeps the selected filter's scope in play (drawer switches
+    // narrow the pick search) instead of searching all tasks.
+    private val createPickSearchFilter: (Filter, String, Set<Long>) -> Filter = {
+        base, query, excluded ->
+        PickSearchFilter(
+            title = base.title,
+            baseSql = base.sql.orEmpty(),
+            query = query,
+            excludedTaskIds = excluded,
+        )
+    },
     refreshFlow: Flow<Unit> = emptyFlow(),
 ) : ViewModel() {
 
@@ -138,11 +150,12 @@ open class TaskListViewModel(
      * [State.searchQuery]) replaces the selected filter with a search over all
      * tasks; a blank *non-null* query deliberately means "My Tasks".
      *
-     * Pick-parent mode always searches all tasks - even with a blank query,
-     * before the user has typed anything - and always applies the subtree
-     * exclusion: in the default "everything" view the moved task and its
-     * subtree must not be visible as pick candidates, not only once text has
-     * been entered.
+     * Pick-parent mode is different: the selected filter stays in play and the
+     * search runs WITHIN it (see [PickSearchFilter]), so while the edit pane's
+     * panel is open, choosing another list in the drawer narrows the pick
+     * candidates to that list, and the subtree exclusion applies from the
+     * first blank query on - before the user has typed anything - so a task
+     * can never be chosen as its own ancestor.
      *
      * Callers that don't want search semantics must pass `null`. The drawer's
      * raw query string is `""`-initialised, so the UI wiring has to normalise
@@ -153,7 +166,11 @@ open class TaskListViewModel(
      */
     internal fun queryFilterFor(queriedState: State): Filter = when {
         queriedState.pickParentFor != null ->
-            createSearchFilter(queriedState.searchQuery.orEmpty(), queriedState.pickParentExcluded)
+            createPickSearchFilter(
+                queriedState.filter,
+                queriedState.searchQuery.orEmpty(),
+                queriedState.pickParentExcluded,
+            )
         queriedState.searchQuery == null -> queriedState.filter
         queriedState.searchQuery.isBlank() -> MyTasksFilter(title = "My Tasks")
         else -> createSearchFilter(queriedState.searchQuery, queriedState.pickParentExcluded)
