@@ -24,61 +24,67 @@ data class SearchFilter(
     val excludedTaskIds: Set<Long> = emptySet(),
 ) : Filter() {
     override val sql: String
-        get() {
-            val matcher = "%$query%"
-            val base = Criterion.and(
-                Task.DELETION_DATE.eq(0),
-                Criterion.or(
-                    Task.NOTES.like(matcher),
-                    Task.TITLE.like(matcher),
-                    Task.ID.`in`(
-                        Query.select(Tag.TASK)
-                            .from(Tag.TABLE)
-                            .where(Tag.NAME.like(matcher))
-                    ),
-                    Task.UUID.`in`(
-                        Query.select(UserActivity.TASK)
-                            .from(UserActivity.TABLE)
-                            .where(UserActivity.MESSAGE.like(matcher))
-                    ),
-                    Task.ID.`in`(
-                        Query.select(Geofence.TASK)
-                            .from(Geofence.TABLE)
-                            .join(Join.inner(Place.TABLE, Place.UID.eq(Geofence.PLACE)))
-                            .where(
-                                Criterion.or(
-                                    Place.NAME.like(matcher),
-                                    Place.ADDRESS.like(matcher)
-                                )
-                            )
-                    ),
-                    Task.ID.`in`(
-                        Query.select(CaldavTask.TASK)
-                            .from(CaldavTask.TABLE)
-                            .join(
-                                Join.inner(
-                                    CaldavCalendar.TABLE,
-                                    CaldavCalendar.UUID.eq(CaldavTask.CALENDAR)
-                                )
-                            )
-                            .where(CaldavCalendar.NAME.like(matcher))
-                    ),
-                )
+        get() = QueryTemplate()
+            .where(
+                if (excludedTaskIds.isEmpty()) {
+                    activeTaskSearchCriterion(query)
+                } else {
+                    Criterion.and(activeTaskSearchCriterion(query), Task.ID.notIn(excludedTaskIds.toList()))
+                }
             )
-            return QueryTemplate()
-                .where(
-                    if (excludedTaskIds.isEmpty()) {
-                        base
-                    } else {
-                        Criterion.and(base, Task.ID.notIn(excludedTaskIds.toList()))
-                    }
-                )
-                .toString()
-        }
+            .toString()
 
     override fun areItemsTheSame(other: FilterListItem): Boolean {
         return other is SearchFilter
     }
 
     override fun supportsHiddenTasks() = false
+}
+
+/**
+ * The title/notes/tag/place/activity/calendar matcher a task search is built
+ * from. Shared by [SearchFilter] (search over all tasks) and [PickSearchFilter]
+ * (the same search narrowed to the selected filter's scope).
+ */
+internal fun activeTaskSearchCriterion(query: String): Criterion {
+    val matcher = "%$query%"
+    return Criterion.and(
+        Task.DELETION_DATE.eq(0),
+        Criterion.or(
+            Task.NOTES.like(matcher),
+            Task.TITLE.like(matcher),
+            Task.ID.`in`(
+                Query.select(Tag.TASK)
+                    .from(Tag.TABLE)
+                    .where(Tag.NAME.like(matcher))
+            ),
+            Task.UUID.`in`(
+                Query.select(UserActivity.TASK)
+                    .from(UserActivity.TABLE)
+                    .where(UserActivity.MESSAGE.like(matcher))
+            ),
+            Task.ID.`in`(
+                Query.select(Geofence.TASK)
+                    .from(Geofence.TABLE)
+                    .join(Join.inner(Place.TABLE, Place.UID.eq(Geofence.PLACE)))
+                    .where(
+                        Criterion.or(
+                            Place.NAME.like(matcher),
+                            Place.ADDRESS.like(matcher)
+                        )
+                    )
+            ),
+            Task.ID.`in`(
+                Query.select(CaldavTask.TASK)
+                    .from(CaldavTask.TABLE)
+                    .join(
+                        Join.inner(
+                            CaldavCalendar.TABLE,
+                            CaldavCalendar.UUID.eq(CaldavTask.CALENDAR)
+                        )
+                    )
+                    .where(CaldavCalendar.NAME.like(matcher))
+            ),
+        ),
+    )
 }

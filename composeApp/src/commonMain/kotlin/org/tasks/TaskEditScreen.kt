@@ -137,6 +137,18 @@ fun TaskEditScreen(
     val loadError by viewModel.loadError.collectAsState()
     val saving by viewModel.saving.collectAsState()
     var showMakeParentPanel by remember { mutableStateOf(false) }
+    // Pick mode has the panel's lifetime: the moment the panel opens, the list
+    // pane enters pick mode for the task being edited (row taps land the pick
+    // and the subtree is hidden before the first keystroke), and every close
+    // path - toolbar toggle, X, delete-panel swap, a successful accept -
+    // cancels it through one place instead of each callback remembering to.
+    LaunchedEffect(showMakeParentPanel, state.task.id) {
+        if (showMakeParentPanel) {
+            onPickExistingOpen(state.task.id)
+        } else {
+            onPickExistingCancel()
+        }
+    }
     var makeParentWorking by remember { mutableStateOf(false) }
     var showDiscardConfirmation by remember { mutableStateOf(false) }
     val makeParentScope = rememberCoroutineScope()

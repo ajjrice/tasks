@@ -46,13 +46,17 @@ import tasks.kmp.generated.resources.make_parent_task_title
  * The inline "move into another task" panel. One explainer title, then two
  * ways to pick a destination, in the shared [InlineActionPanel] container:
  *
- * - *Find existing task...* — a live search field. Typing opens pick mode in
- *   the list pane (via [onPickExistingOpen]) and filters its rows as the user
- *   types (via [onFindQueryChange]); the list pane hides its own search bar
- *   and the edited task's subtree is excluded from the results, so a task can
- *   never be chosen as its own ancestor. Tapping a result row lands the pick
- *   here: the field then shows the picked task's title, and typing into it
- *   again clears the pick and resumes searching.
+ * - *Find existing task...* — a live search field. The moment the panel
+ *   opens, the list pane is already in pick mode for the edited task (row
+ *   taps land the pick instead of opening the task, and the edited task's
+ *   subtree is excluded before the first keystroke), so a candidate can be
+ *   chosen by clicking straight in the list. Typing into the field (via
+ *   [onFindQueryChange]) live-filters those rows, WITHIN the list currently
+ *   selected in the drawer: switching lists there narrows the search to that
+ *   list's scope, and My Tasks widens it back out. Tapping a result row (or
+ *   clicking any row) lands the pick here: the field then shows the picked
+ *   task's title and the floppy commits it; typing into it again clears the
+ *   pick and resumes searching.
  * - *Create new task...* — a plain text field; accepting creates the task
  *   and nests this one under it.
  *

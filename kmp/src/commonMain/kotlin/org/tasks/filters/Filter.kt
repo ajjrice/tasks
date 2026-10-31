@@ -57,6 +57,7 @@ fun Filter.key(): String = when (this) {
     is SnoozedFilter -> "builtin_snoozed"
     is NotificationsFilter -> "builtin_notifications"
     is SearchFilter -> "builtin_search"
+    is PickSearchFilter -> "builtin_pick_search"
     is EmptyFilter -> "builtin_empty"
     is DebugFilter -> title
     else -> {
