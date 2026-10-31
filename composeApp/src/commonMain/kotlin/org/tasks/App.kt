@@ -691,6 +691,21 @@ fun App(
             // pick mode runs.
             var pickQuery by rememberSaveable { mutableStateOf("") }
 
+            // The pick only exists for the edit pane it was started from: every path that closes
+            // that pane (the drawer's list switch, the pane's close button, a restored back
+            // stack) leaves the list pane behind, and a surviving pick would keep routing row
+            // taps to onPickTask instead of opening the tapped task and keep the view model
+            // masking the selected filter with the pick's all-task search - the ""-masks-the-
+            // filter class of regression from upstream PR #4803. Reset the state so the pane
+            // returns to the ordinary list.
+            LaunchedEffect(hasDetailOpen) {
+                if (!hasDetailOpen && pickTargetTaskId != null) {
+                    pickTargetTaskId = null
+                    pickedExistingTask = null
+                    pickQuery = ""
+                }
+            }
+
             // The filter is passed in rather than read from taskListState: a caller that just
             // called setFilter still sees the previous value here, because the collector that
             // publishes it hasn't been dispatched yet.
