@@ -62,6 +62,7 @@ fun Filter.key(): String = when (this) {
     is PlaceFilter -> "place_${place.uid}"
     is TagFilter -> "tag_${tagData.remoteId}"
     is MyTasksFilter -> "builtin_my_tasks"
+    is PickAllFilter -> "builtin_pick_all"
     is TodayFilter -> "builtin_today"
     is RecentlyModifiedFilter -> "builtin_recently_modified"
     is TimerFilter -> "builtin_timer"
