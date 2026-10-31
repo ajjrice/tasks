@@ -685,6 +685,11 @@ fun App(
             // tapping a row picks it as the destination instead of opening it.
             var pickTargetTaskId by rememberSaveable { mutableStateOf<Long?>(null) }
             var pickedExistingTask by remember { mutableStateOf<PickedTask?>(null) }
+            // The edit pane's "Find existing task..." field is the pick's
+            // search input: its text live-filters the list pane's results
+            // (see [TaskListPane]), which hides its own search bar while
+            // pick mode runs.
+            var pickQuery by rememberSaveable { mutableStateOf("") }
 
             // The filter is passed in rather than read from taskListState: a caller that just
             // called setFilter still sees the previous value here, because the collector that
@@ -957,6 +962,15 @@ fun App(
                                 pickedTaskId = pickedExistingTask?.id,
                                 onPickTask = { task ->
                                     pickedExistingTask = PickedTask(task.id, task.title.orEmpty())
+                                    // The field in the panel now shows the picked
+                                    // title, not the last query typed.
+                                    pickQuery = ""
+                                },
+                                pickQuery = pickQuery,
+                                onPickModeBack = {
+                                    pickTargetTaskId = null
+                                    pickedExistingTask = null
+                                    pickQuery = ""
                                 },
                                 onCreateTask = onCreateTask,
                                 onMenuClick = onMenuClick,
@@ -994,10 +1008,21 @@ fun App(
                                 onClose = { closeDetail() },
                                 pickedExistingTask = pickedExistingTask,
                                 onPickExistingOpen = { taskId -> pickTargetTaskId = taskId },
+                                onPickQueryChange = { query ->
+                                    pickQuery = query
+                                    // A cleared find field with no pick in flight leaves
+                                    // pick mode: the list pane goes back to the selected
+                                    // filter. (A pick still shows in the field, so it keeps
+                                    // pick mode alive until it is committed or cleared.)
+                                    if (query.isEmpty() && pickedExistingTask == null) {
+                                        pickTargetTaskId = null
+                                    }
+                                },
                                 onClearPickedExisting = { pickedExistingTask = null },
                                 onPickExistingCancel = {
                                     pickTargetTaskId = null
                                     pickedExistingTask = null
+                                    pickQuery = ""
                                 },
                             )
                         } else {
@@ -1779,13 +1804,16 @@ private fun TaskListScreen(
     onTaskClick: (TaskEditDestination) -> Unit,
     onCreateTask: () -> Unit,
     onMenuClick: () -> Unit,
-    // Move-into pick mode (see [pickTargetTaskId] in App): the search is
-    // forced open, row taps pick instead of open, and the picked row is
-    // highlighted.
+    // Move-into pick mode (see [pickTargetTaskId] in App): the edit pane's
+    // "Find existing task..." field is the search input ([pickQuery] live-
+    // filters these rows), this pane hides its own search bar, row taps pick
+    // instead of open, and the picked row is highlighted.
     pickMode: Boolean = false,
     pickParentFor: Long? = null,
     pickedTaskId: Long? = null,
     onPickTask: (TaskContainer) -> Unit = {},
+    pickQuery: String = "",
+    onPickModeBack: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val chipDataProvider = koinInject<ChipDataProvider>()
@@ -1826,6 +1854,8 @@ private fun TaskListScreen(
         pickParentFor = pickParentFor,
         pickedTaskId = pickedTaskId,
         onPickTask = onPickTask,
+        pickQuery = pickQuery,
+        onPickModeBack = onPickModeBack,
         modifier = Modifier.fillMaxSize(),
     )
 
@@ -1907,6 +1937,7 @@ private fun TaskEditEntry(
     // Move-into pick state round-trip (owned in App, see the pick state there).
     pickedExistingTask: PickedTask? = null,
     onPickExistingOpen: (taskId: Long) -> Unit = {},
+    onPickQueryChange: (String) -> Unit = {},
     onClearPickedExisting: () -> Unit = {},
     onPickExistingCancel: () -> Unit = {},
 ) {
@@ -1927,6 +1958,7 @@ private fun TaskEditEntry(
         onClose = onClose,
         pickedExistingTask = pickedExistingTask,
         onPickExistingOpen = onPickExistingOpen,
+        onPickQueryChange = onPickQueryChange,
         onClearPickedExisting = onClearPickedExisting,
         onPickExistingCancel = onPickExistingCancel,
     )
@@ -2164,12 +2196,17 @@ private fun TaskListPane(
     onCreateTask: () -> Unit,
     modifier: Modifier = Modifier,
     // Move-into pick mode (see the pick state in App): [pickParentFor] is the
-    // task being moved - the view model excludes it and its subtree from
-    // search results - and row taps pick instead of open.
+    // task being moved - the view model excludes it and its subtree from the
+    // results - and row taps pick instead of open. The search text is owned
+    // by the edit pane's "Find existing task..." field and arrives here as
+    // [pickQuery]; while pick mode runs this pane's own search bar stays
+    // hidden and the rows are just the live results.
     pickMode: Boolean = false,
     pickParentFor: Long? = null,
     pickedTaskId: Long? = null,
     onPickTask: (TaskContainer) -> Unit = {},
+    pickQuery: String = "",
+    onPickModeBack: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val floatingToolbarScrollBehavior = FloatingToolbarDefaults.exitAlwaysScrollBehavior(
@@ -2194,14 +2231,25 @@ private fun TaskListPane(
         keyboardController?.hide()
     }
 
-    // Pick mode rides the ordinary task search: entering it opens the search bar, and the view
-    // model's exclusion keeps the picked-into task (and its subtree) out of the results so a
-    // task can never be chosen as its own ancestor.
-    LaunchedEffect(pickMode) {
-        if (pickMode) searchActive = true
-    }
-    LaunchedEffect(pickParentFor) {
-        viewModel.setPickParent(pickParentFor)
+    // Pick mode drives the ordinary task search from the edit pane: the view
+    // model's exclusion keeps the picked-into task (and its subtree) out of
+    // the results - even before anything has been typed - so a task can
+    // never be chosen as its own ancestor. The effect only acts on mode
+    // transitions (and queries while in the mode): a no-op first run must not
+    // clobber a search query the view model restored from a previous session.
+    var wasPickMode by remember { mutableStateOf(false) }
+    LaunchedEffect(pickMode, pickParentFor, pickQuery) {
+        if (pickMode) {
+            if (!wasPickMode) {
+                wasPickMode = true
+                viewModel.setPickParent(pickParentFor)
+            }
+            viewModel.setSearchQuery(pickQuery.ifBlank { "" })
+        } else if (wasPickMode) {
+            wasPickMode = false
+            viewModel.setPickParent(null)
+            viewModel.setSearchQuery(null)
+        }
     }
 
     var topBarHeight by remember { mutableStateOf(0.dp) }
@@ -2279,15 +2327,20 @@ private fun TaskListPane(
         // and from the ExitAlwaysFloatingToolbarScrollBehavior layout modifier.
         if (maxWidth < 48.dp || maxHeight < 48.dp) return@BoxWithConstraints
         // Back collapses the task search bar instead of popping the list while it is open.
-        PlatformBackHandler(enabled = searchActive, onBack = ::closeTaskSearch)
+        // Back collapses the task search bar, or - while pick mode runs and
+        // the bar is hidden - leaves pick mode via the edit pane.
+        PlatformBackHandler(enabled = searchActive || pickMode, onBack = {
+            if (pickMode) onPickModeBack() else closeTaskSearch()
+        })
         LaunchedEffect(searchActive) {
-            if (searchActive) {
+            if (searchActive && !pickMode) {
                 searchFocusRequester.requestFocus()
             }
         }
-        // Reserved top padding so the hoisted search bar never overlaps the tasks it filters.
+        // Reserved top padding so the hoisted search bar never overlaps the
+        // tasks it filters (the bar is hidden while pick mode runs).
         val listTopPadding =
-            if (searchActive) topBarHeight + SEARCH_BAR_HEIGHT + 8.dp else topBarHeight
+            if (searchActive && !pickMode) topBarHeight + SEARCH_BAR_HEIGHT + 8.dp else topBarHeight
         when (val results = state.tasks) {
             is TasksResults.Loading -> Box(
                 modifier = Modifier.fillMaxSize(),
@@ -2301,9 +2354,9 @@ private fun TaskListPane(
                 topPadding = listTopPadding,
                 onTaskClick = { task ->
                     if (pickMode) {
-                        // Pick instead of open: the tap lands the destination in the edit pane's
-                        // panel and the search bar folds back down.
-                        closeTaskSearch()
+                        // Pick instead of open: the tap lands the destination in
+                        // the edit pane's panel; the rows stay put so another
+                        // row can be tapped to re-pick.
                         onPickTask(task)
                     } else {
                         onTaskClick(TaskEditDestination(task.id, task.uuid))
@@ -2365,11 +2418,12 @@ private fun TaskListPane(
             ),
         )
 
-        if (searchActive) {
+        if (searchActive && !pickMode) {
             // The search bar is hoisted to the top of the task list, above the tasks. It is
             // independent of the navigation drawer's filter search: typing here filters tasks via
             // TaskListViewModel.setSearchQuery (-> SearchFilter over all tasks), and the view
             // model restores the active filter automatically when the query is cleared (null).
+            // It is hidden while pick mode runs: the edit pane's field is the search input then.
             SearchBar(
                 modifier = Modifier
                     .focusRequester(searchFocusRequester)
@@ -2381,13 +2435,7 @@ private fun TaskListPane(
                     searchText = newText
                     viewModel.setSearchQuery(newText.ifBlank { null })
                 },
-                placeHolder = if (pickMode) {
-                    // Literal rather than stringResource: the placeholder is already a literal
-                    // (see the TODO above) and composeResources are not reliable on JVM here.
-                    "Find existing task..."
-                } else {
-                    "Search" // TODO: use stringResource when kmp composeResources work for JVM
-                },
+                placeHolder = "Search", // TODO: use stringResource when kmp composeResources work for JVM
                 onCloseClicked = { closeTaskSearch() },
                 onSearchClicked = { keyboardController?.hide() },
             )
@@ -2406,8 +2454,14 @@ private fun TaskListPane(
             fabContainerColor = Color(themeColor.primaryColor),
             fabContentColor = Color(themeColor.onPrimaryColor),
             filterTint = state.filter.tint,
-            searchActive = searchActive,
-            onSearchClick = { if (searchActive) closeTaskSearch() else { searchActive = true } },
+            searchActive = searchActive && !pickMode,
+            onSearchClick = {
+                // While pick mode runs the edit pane's field is the search
+                // input and this pane's bar stays hidden, so the search toggle
+                // is inert rather than opening a bar that cannot be shown.
+                if (pickMode) Unit
+                else if (searchActive) closeTaskSearch() else { searchActive = true }
+            },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .platformNavigationBarsPadding()

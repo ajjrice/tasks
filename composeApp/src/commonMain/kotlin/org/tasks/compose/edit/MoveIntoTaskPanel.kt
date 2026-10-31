@@ -1,18 +1,12 @@
 package org.tasks.compose.edit
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.IconButton
@@ -31,13 +25,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.resources.stringResource
 import org.tasks.PickedTask
@@ -54,17 +46,19 @@ import tasks.kmp.generated.resources.make_parent_task_title
  * The inline "move into another task" panel. One explainer title, then two
  * ways to pick a destination, in the shared [InlineActionPanel] container:
  *
- * - *Find existing task...* — a launcher field, not a text input. Tapping it
- *   opens the list pane's task search in pick mode (the list pane and the
- *   pick state live in App, which hands the pick back here as [pickedTask]);
- *   the field then shows the picked task's title, and tapping it again
- *   re-opens the search.
+ * - *Find existing task...* — a live search field. Typing opens pick mode in
+ *   the list pane (via [onPickExistingOpen]) and filters its rows as the user
+ *   types (via [onFindQueryChange]); the list pane hides its own search bar
+ *   and the edited task's subtree is excluded from the results, so a task can
+ *   never be chosen as its own ancestor. Tapping a result row lands the pick
+ *   here: the field then shows the picked task's title, and typing into it
+ *   again clears the pick and resumes searching.
  * - *Create new task...* — a plain text field; accepting creates the task
  *   and nests this one under it.
  *
- * The two fields are mutually exclusive: once one has content the other is
- * disabled and its content cleared (a pick clears the new-title draft here;
- * typing a new title clears the pick through [onClearPicked]). The single
+ * The two fields are mutually exclusive: while the find field has content or
+ * a pick, the new-title field is disabled (and a landed pick clears any
+ * new-title draft). Clear the find field to switch to create-new. The single
  * floppy commits whichever field has content.
  *
  * Deliberately not a dialog, and the user-facing words avoid "parent/child":
@@ -76,20 +70,27 @@ fun MoveIntoTaskPanel(
     working: Boolean,
     keyboardController: SoftwareKeyboardController? = null,
     pickedTask: PickedTask?,
-    onPickExistingClick: () -> Unit = {},
+    onPickExistingOpen: () -> Unit = {},
+    onFindQueryChange: (String) -> Unit = {},
     onClearPicked: () -> Unit = {},
     onAcceptNew: (title: String) -> Unit,
     onAcceptExisting: (taskId: Long) -> Unit,
     onCancel: () -> Unit,
 ) {
     var newTitle by rememberSaveable { mutableStateOf("") }
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    // The find field's text. While a pick is shown the field displays the
+    // picked title instead, and editing it clears the pick (see below).
+    var findQuery by rememberSaveable { mutableStateOf("") }
+    val findFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { findFocusRequester.requestFocus() }
     // Mutual exclusion, pick side: landing a pick clears any new-title draft,
     // so the floppy's destination is unambiguous.
     LaunchedEffect(pickedTask) {
         if (pickedTask != null) newTitle = ""
     }
+    // The find field is "active" while it holds a query or a pick: that is
+    // exactly when the new-title field gives way.
+    val findActive = pickedTask != null || findQuery.isNotEmpty()
     val canAccept = !working && (newTitle.isNotBlank() || pickedTask != null)
 
     fun accept() {
@@ -111,19 +112,19 @@ fun MoveIntoTaskPanel(
         )
         InlineActionPanel {
             Column {
-                ExistingTaskLauncherField(
-                    title = pickedTask?.title.orEmpty(),
-                    enabled = !working && newTitle.isEmpty(),
-                    onClick = onPickExistingClick,
-                )
-                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
-                    value = newTitle,
-                    onValueChange = {
-                        // Mutual exclusion, title side: starting to type a new
-                        // task clears the existing-task pick.
-                        if (pickedTask != null && it.isNotEmpty()) onClearPicked()
-                        newTitle = it
+                    // A pick shows the picked task's title; otherwise the
+                    // query being typed (or the placeholder).
+                    value = pickedTask?.title ?: findQuery,
+                    onValueChange = { newText ->
+                        // Editing a picked title starts a new search: the
+                        // first character clears the pick.
+                        if (pickedTask != null) onClearPicked()
+                        // Every keystroke makes sure pick mode is on in the
+                        // list pane (idempotent) and pushes the live query.
+                        onPickExistingOpen()
+                        findQuery = newText
+                        onFindQueryChange(newText)
                     },
                     // The field is an item of the edit pane: the pane's card
                     // radius and the app's hairline (outlineVariant) line.
@@ -133,7 +134,41 @@ fun MoveIntoTaskPanel(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .focusRequester(focusRequester)
+                        .focusRequester(findFocusRequester)
+                        .onPreviewKeyEvent { event ->
+                            when {
+                                event.key == Key.Enter -> {
+                                    if (canAccept && pickedTask != null) {
+                                        keyboardController?.hide()
+                                        accept()
+                                    }
+                                    true
+                                }
+                                event.key == Key.Escape -> {
+                                    onCancel()
+                                    true
+                                }
+                                else -> false
+                            }
+                        },
+                    placeholder = { Text(stringResource(Res.string.existing_task_placeholder)) },
+                    singleLine = true,
+                    enabled = !working,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        if (canAccept) accept()
+                    }),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = newTitle,
+                    onValueChange = { newTitle = it },
+                    shape = RoundedCornerShape(InlineActionPanelRadius),
+                    colors = TextFieldDefaults.colors(
+                        unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
                         .onPreviewKeyEvent { event ->
                             when {
                                 event.key == Key.Enter -> {
@@ -152,10 +187,10 @@ fun MoveIntoTaskPanel(
                         },
                     placeholder = { Text(stringResource(Res.string.make_parent_task_title)) },
                     singleLine = true,
-                    // Stays enabled even with a pick in the other field: typing the first
-                    // character is what clears the pick (onClearPicked), so disabling it
-                    // here would make "switch to create-new" impossible.
-                    enabled = !working,
+                    // Mutually exclusive with the find field: while the find
+                    // field holds a query or a pick, this one gives way.
+                    // Clear the find field to switch back to create-new.
+                    enabled = !working && !findActive,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = {
                         if (canAccept) accept()
@@ -185,46 +220,5 @@ fun MoveIntoTaskPanel(
                 }
             }
         }
-    }
-}
-
-/**
- * The "find existing task" field: a read-only field-styled box that launches
- * the list pane's pick search. Styled to sit visually beside the Outlined
- * TextField below it (same radius, hairline and content box).
- */
-@Composable
-private fun ExistingTaskLauncherField(
-    title: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    val shape = RoundedCornerShape(InlineActionPanelRadius)
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp)
-            .clip(shape)
-            .background(Color.Transparent)
-            .border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant,
-                shape = shape,
-            )
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Text(
-            text = title.ifEmpty { stringResource(Res.string.existing_task_placeholder) },
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (title.isEmpty()) {
-                MaterialTheme.colorScheme.outline
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
 }

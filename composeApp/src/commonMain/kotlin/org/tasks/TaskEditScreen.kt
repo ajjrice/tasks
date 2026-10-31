@@ -124,6 +124,7 @@ fun TaskEditScreen(
     // so the list pane and this screen share one source of truth.
     pickedExistingTask: PickedTask? = null,
     onPickExistingOpen: (taskId: Long) -> Unit = {},
+    onPickQueryChange: (String) -> Unit = {},
     onClearPickedExisting: () -> Unit = {},
     onPickExistingCancel: () -> Unit = {},
 ) {
@@ -378,7 +379,8 @@ fun TaskEditScreen(
                                 working = makeParentWorking,
                                 keyboardController = keyboardController,
                                 pickedTask = pickedExistingTask,
-                                onPickExistingClick = { onPickExistingOpen(state.task.id) },
+                                onPickExistingOpen = { onPickExistingOpen(state.task.id) },
+                                onFindQueryChange = onPickQueryChange,
                                 onClearPicked = onClearPickedExisting,
                                 onAcceptNew = { title ->
                                     makeParentWorking = true
@@ -400,6 +402,9 @@ fun TaskEditScreen(
                                             taskRequests.open(
                                                 TaskEditDestination(parent.id, parent.uuid),
                                             )
+                                            // The panel is gone; if the panel had opened
+                                            // pick mode along the way, leave it.
+                                            onPickExistingCancel()
                                         } catch (e: Exception) {
                                             log.e(e) { "Failed to make parent task" }
                                             makeParentWorking = false
@@ -410,6 +415,31 @@ fun TaskEditScreen(
                                     makeParentWorking = true
                                     makeParentScope.launch {
                                         try {
+                                            // Cycle backstop: walk the picked task's ancestors.
+                                            // The pick search already hides this task and its
+                                            // subtree, so a hit here means stale or corrupt
+                                            // data - and moving anyway would nest the task
+                                            // under itself, a parent cycle the recursive
+                                            // children query would then follow forever (it OOMs
+                                            // the JVM). Refuse and clear the pick so the user
+                                            // can choose again.
+                                            var cursor = targetId
+                                            var steps = 0
+                                            var rejected = false
+                                            while (cursor != 0L && steps < 1000) {
+                                                if (cursor == state.task.id) {
+                                                    rejected = true
+                                                    break
+                                                }
+                                                cursor = taskDao.fetch(cursor)?.parent ?: 0L
+                                                steps++
+                                            }
+                                            if (rejected) {
+                                                log.e { "Refused to move $targetId: pick is inside the task's own subtree" }
+                                                onClearPickedExisting()
+                                                makeParentWorking = false
+                                                return@launch
+                                            }
                                             val calendars = caldavDao.getCalendars(listOf(targetId))
                                             val listUuid = calendars.firstOrNull()?.uuid
                                             if (listUuid == null) {
