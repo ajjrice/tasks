@@ -2992,32 +2992,18 @@ private fun FloatingToolbar(
     )
     HorizontalFloatingToolbar(
         expanded = true,
+        // The floatingActionButton slot is measured as a single 56dp square by
+        // HorizontalFloatingToolbar, so it can only host one FAB. The "New task" button lives here
+        // in its original location; the task-list search toggle moved to the icon-button row below
+        // (next to sort). A second FAB in this slot overflowed the 56dp box and clipped the add
+        // button off the right edge of the window on desktop.
         floatingActionButton = {
-            // The search FAB is deliberately kept out of the navigation drawer (whose search
-            // filters the drawer's own lists/tags) and is a separate, task-list search affordance.
-            // It toggles the search bar that is hoisted to the top of the task list.
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            FloatingActionButton(
+                onClick = onAddClick,
+                containerColor = resolvedFabContainer,
+                contentColor = resolvedFabContent,
             ) {
-                FloatingActionButton(
-                    onClick = onSearchClick,
-                    containerColor = resolvedFabContainer,
-                    contentColor = resolvedFabContent,
-                ) {
-                    SymbolIcon(
-                        if (searchActive) TasksIcons.CLEAR else TasksIcons.SEARCH,
-                        contentDescription =
-                            if (searchActive) "Close search" else "Search tasks",
-                    )
-                }
-                FloatingActionButton(
-                    onClick = onAddClick,
-                    containerColor = resolvedFabContainer,
-                    contentColor = resolvedFabContent,
-                ) {
-                    SymbolIcon(TasksIcons.ADD, contentDescription = "New task")
-                }
+                SymbolIcon(TasksIcons.ADD, contentDescription = "New task")
             }
         },
         colors = FloatingToolbarDefaults.standardFloatingToolbarColors(
@@ -3034,6 +3020,18 @@ private fun FloatingToolbar(
         }
         IconButton(onClick = onSortClick) {
             SymbolIcon(TasksIcons.SWAP_VERT, contentDescription = "Sort")
+        }
+        // Task-list search toggle. Kept out of the navigation drawer (whose search filters the
+        // drawer's own lists/tags); this is a separate, task-list search affordance that toggles
+        // the search bar hoisted to the top of the task list. Rendered as a toolbar icon button —
+        // not a second FAB — so it fits the fixed-size FAB slot model without clipping the add
+        // button.
+        IconButton(onClick = onSearchClick) {
+            SymbolIcon(
+                if (searchActive) TasksIcons.CLEAR else TasksIcons.SEARCH,
+                contentDescription =
+                    if (searchActive) "Close search" else "Search tasks",
+            )
         }
     }
 }
