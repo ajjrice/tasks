@@ -45,14 +45,18 @@ object TaskListQuery {
         showCollapsed: Boolean = false,
     ): String {
         val start = currentTimeMillis()
+        // The ordering strategy follows the list's sort identity (see
+        // Filter.sortIdentity), not the concrete filter: pick-mode wrappers
+        // narrow the WHERE clause but must not change how the pane orders.
+        val sortIdentity = filter.sortIdentity
         return when {
-            filter.supportsManualSort() && preferences.isManualSort ->
+            sortIdentity.supportsManualSort() && preferences.isManualSort ->
                 getRecursiveQuery(filter, preferences, limit, showCollapsed)
 
-            filter is AstridOrderingFilter && preferences.isAstridSort ->
+            sortIdentity is AstridOrderingFilter && preferences.isAstridSort ->
                 getNonRecursiveQuery(filter, preferences, limit)
 
-            filter.supportsSorting() ->
+            sortIdentity.supportsSorting() ->
                 getRecursiveQuery(filter, preferences, limit, showCollapsed)
 
             else -> getNonRecursiveQuery(filter, preferences, limit)

@@ -15,7 +15,7 @@ class PickSearchFilterTest {
     fun blankQueryWithoutExclusionLeavesTheBaseScopeUnchanged() {
         val sql = PickSearchFilter(
             title = "My Tasks",
-            baseSql = myTasks.sql,
+            base = myTasks,
             query = "",
         ).sql
         assertEquals("nothing to AND in, the base clause passes through", myTasks.sql, sql)
@@ -25,7 +25,7 @@ class PickSearchFilterTest {
     fun blankQueryStillExcludesTheSubtree() {
         val sql = PickSearchFilter(
             title = "My Tasks",
-            baseSql = myTasks.sql,
+            base = myTasks,
             query = "",
             excludedTaskIds = setOf(42L, 43L),
         ).sql
@@ -39,7 +39,7 @@ class PickSearchFilterTest {
     fun aTypedQueryAndsTheSearchOntoTheBaseScope() {
         val sql = PickSearchFilter(
             title = "My Tasks",
-            baseSql = myTasks.sql,
+            base = myTasks,
             query = "blue whale",
             excludedTaskIds = setOf(42L),
         ).sql
@@ -52,14 +52,15 @@ class PickSearchFilterTest {
     @Test
     fun aJoinCarryingBaseKeepsItsJoins() {
         // CaldavFilter's sql starts with a LEFT JOIN before its WHERE.
-        val base = CaldavFilter(
+        val caldav = CaldavFilter(
             calendar = CaldavCalendar(uuid = "cal-1", account = "acct-1"),
             account = CaldavAccount(uuid = "acct-1"),
-        ).sql
+        )
+        val base = caldav.sql
         assertTrue(base.startsWith("LEFT JOIN "))
         val sql = PickSearchFilter(
             title = "Inbox",
-            baseSql = base,
+            base = caldav,
             query = "test",
         ).sql
         // The join prefix is preserved verbatim up to the top-level WHERE.
@@ -86,5 +87,25 @@ class PickSearchFilterTest {
         val sql = pickSearchSql("0", "test", emptySet())
         assertTrue(sql.startsWith("WHERE ((0) AND "))
         assertTrue(sql.contains("LIKE '%test%'"))
+    }
+
+    @Test
+    fun sortIdentityIsTheWrappedFilter() {
+        val pick = PickSearchFilter(title = "Inbox", base = myTasks, query = "")
+        assertTrue(
+            "the query machinery must see the wrapped list, not the wrapper",
+            pick.sortIdentity === myTasks,
+        )
+    }
+
+    @Test
+    fun sortCapabilitiesFollowTheWrappedFilter() {
+        val caldav = CaldavFilter(
+            calendar = CaldavCalendar(uuid = "cal-1", account = "acct-1"),
+            account = CaldavAccount(uuid = "acct-1"),
+        )
+        val pick = PickSearchFilter(title = "Inbox", base = caldav, query = "")
+        assertTrue("a manual-sort list must keep manual sort while picking", pick.supportsManualSort())
+        assertTrue(pick.supportsSorting())
     }
 }

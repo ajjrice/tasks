@@ -90,7 +90,7 @@ class TaskListViewModelPickParentTest {
         assertEquals(setOf(42L), pick.excludedTaskIds)
         // The drawer's selection stays in play: the base scope is preserved,
         // not replaced by an all-task search.
-        assertEquals(caldav.sql, pick.baseSql)
+        assertTrue("the selected list must stay the base scope", pick.base === caldav)
         assertEquals("", pick.query)
 
         // A blank query (the find field, untouched) keeps the same exclusion:
@@ -99,14 +99,14 @@ class TaskListViewModelPickParentTest {
         val duringPick = vm.queryFilterFor(vm.state.value) as PickSearchFilter
         assertEquals("", duringPick.query)
         assertEquals(setOf(42L), duringPick.excludedTaskIds)
-        assertEquals(caldav.sql, duringPick.baseSql)
+        assertTrue(duringPick.base === caldav)
 
         // And a typed query filters within the same base scope and exclusion.
         vm.setSearchQuery(TEST_SEARCH_QUERY)
         val withQuery = vm.queryFilterFor(vm.state.value) as PickSearchFilter
         assertEquals(TEST_SEARCH_QUERY, withQuery.query)
         assertEquals(setOf(42L), withQuery.excludedTaskIds)
-        assertEquals(caldav.sql, withQuery.baseSql)
+        assertTrue(withQuery.base === caldav)
     }
 
     @Test
@@ -123,7 +123,7 @@ class TaskListViewModelPickParentTest {
         vm.setFilter(myTasks)
         val reScoped = vm.queryFilterFor(vm.state.value) as PickSearchFilter
         assertEquals(TEST_SEARCH_QUERY, reScoped.query)
-        assertEquals(myTasks.sql, reScoped.baseSql)
+        assertTrue("re-scope must keep the new drawer selection as base", reScoped.base === myTasks)
         assertEquals(setOf(42L), reScoped.excludedTaskIds)
     }
 
