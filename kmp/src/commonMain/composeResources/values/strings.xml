@@ -705,8 +705,9 @@
     <string name="reset_trusted_certificates_summary">Forget certificates and certificate authorities you accepted for servers</string>
     <string name="trusted_certificates_reset">Trusted certificates reset</string>
     <string name="make_parent_task">Move into new task</string>
-    <string name="make_parent_task_title">New task</string>
+    <string name="make_parent_task_title">Create new task...</string>
     <string name="make_parent_task_panel_title">This task will become a subtask of:</string>
+    <string name="existing_task_placeholder">Find existing task...</string>
     <string name="delete_tree_title">These tasks will be deleted</string>
     <string name="delete_tree_protected">protected — not deleted</string>
     <plurals name="delete_n_tasks">

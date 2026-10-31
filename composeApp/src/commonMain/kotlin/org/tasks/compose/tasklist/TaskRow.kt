@@ -86,6 +86,7 @@ internal fun TaskRow(
     onToggleComplete: () -> Unit,
     onToggleSubtasks: () -> Unit,
     onFilterClick: (Filter) -> Unit,
+    highlighted: Boolean = false,
 ) {
     val isDark = isDarkTheme()
     val checkColor = if (task.isCompleted) {
@@ -98,10 +99,14 @@ internal fun TaskRow(
             .fillMaxWidth()
             .clickable(enabled = !doomed, onClick = onClick)
             .then(
-                if (doomed) {
-                    Modifier.background(MaterialTheme.colorScheme.errorContainer)
-                } else {
-                    Modifier
+                when {
+                    doomed -> Modifier.background(MaterialTheme.colorScheme.errorContainer)
+                    // The move-into panel's picked destination: a soft wash so the
+                    // row reads as "the one", not as selected-for-bulk-action.
+                    highlighted -> Modifier.background(
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    )
+                    else -> Modifier
                 }
             )
             .padding(

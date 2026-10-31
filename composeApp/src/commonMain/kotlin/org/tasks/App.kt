@@ -679,6 +679,13 @@ fun App(
                 )
             }
 
+            // "Move into another task" pick state: while [pickTargetTaskId] is
+            // non-null the list pane runs in pick mode for that task - its
+            // search is open, the search hides the task and its subtree, and
+            // tapping a row picks it as the destination instead of opening it.
+            var pickTargetTaskId by rememberSaveable { mutableStateOf<Long?>(null) }
+            var pickedExistingTask by remember { mutableStateOf<PickedTask?>(null) }
+
             // The filter is passed in rather than read from taskListState: a caller that just
             // called setFilter still sees the previous value here, because the collector that
             // publishes it hasn't been dispatched yet.
@@ -952,6 +959,12 @@ fun App(
                                 onSubscribe = { backStack.push(PricingDestination()) },
                                 onAddAccount = { backStack.push(AddAccountDestination) },
                                 onTaskClick = { destination -> openTaskFromList(destination) },
+                                pickMode = pickTargetTaskId != null,
+                                pickParentFor = pickTargetTaskId,
+                                pickedTaskId = pickedExistingTask?.id,
+                                onPickTask = { task ->
+                                    pickedExistingTask = PickedTask(task.id, task.title.orEmpty())
+                                },
                                 onCreateTask = onCreateTask,
                                 onMenuClick = onMenuClick,
                                 searchActive = searchActive,
@@ -988,6 +1001,13 @@ fun App(
                                 onSubscribe = { backStack.push(PricingDestination()) },
                                 onListsChanged = { drawerViewModel?.updateFilters() },
                                 onClose = { closeDetail() },
+                                pickedExistingTask = pickedExistingTask,
+                                onPickExistingOpen = { taskId -> pickTargetTaskId = taskId },
+                                onClearPickedExisting = { pickedExistingTask = null },
+                                onPickExistingCancel = {
+                                    pickTargetTaskId = null
+                                    pickedExistingTask = null
+                                },
                             )
                         } else {
                             LoadingPane()
@@ -1776,6 +1796,13 @@ private fun TaskListScreen(
     onMenuClick: () -> Unit,
     searchActive: Boolean,
     onSearchActiveChange: (Boolean) -> Unit,
+    // Move-into pick mode (see [pickTargetTaskId] in App): the search is
+    // forced open, row taps pick instead of open, and the picked row is
+    // highlighted.
+    pickMode: Boolean = false,
+    pickParentFor: Long? = null,
+    pickedTaskId: Long? = null,
+    onPickTask: (TaskContainer) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val chipDataProvider = koinInject<ChipDataProvider>()
@@ -1814,6 +1841,10 @@ private fun TaskListScreen(
         onCreateTask = onCreateTask,
         searchActive = searchActive,
         onSearchActiveChange = onSearchActiveChange,
+        pickMode = pickMode,
+        pickParentFor = pickParentFor,
+        pickedTaskId = pickedTaskId,
+        onPickTask = onPickTask,
         modifier = Modifier.fillMaxSize(),
     )
 
@@ -1892,6 +1923,11 @@ private fun TaskEditEntry(
     filterTint: Int = 0,
     onOpenSubtask: (taskId: Long, remoteId: String, isDraft: Boolean) -> Unit,
     onClose: () -> Unit,
+    // Move-into pick state round-trip (owned in App, see the pick state there).
+    pickedExistingTask: PickedTask? = null,
+    onPickExistingOpen: (taskId: Long) -> Unit = {},
+    onClearPickedExisting: () -> Unit = {},
+    onPickExistingCancel: () -> Unit = {},
 ) {
     val taskEditViewModel = koinViewModel<TaskEditViewModel> {
         org.koin.core.parameter.parametersOf(destination)
@@ -1908,6 +1944,10 @@ private fun TaskEditEntry(
         filterTint = filterTint,
         onOpenSubtask = onOpenSubtask,
         onClose = onClose,
+        pickedExistingTask = pickedExistingTask,
+        onPickExistingOpen = onPickExistingOpen,
+        onClearPickedExisting = onClearPickedExisting,
+        onPickExistingCancel = onPickExistingCancel,
     )
 
     NewListDialogHost(
@@ -2144,6 +2184,13 @@ private fun TaskListPane(
     searchActive: Boolean,
     onSearchActiveChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    // Move-into pick mode (see the pick state in App): [pickParentFor] is the
+    // task being moved - the view model excludes it and its subtree from
+    // search results - and row taps pick instead of open.
+    pickMode: Boolean = false,
+    pickParentFor: Long? = null,
+    pickedTaskId: Long? = null,
+    onPickTask: (TaskContainer) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val floatingToolbarScrollBehavior = FloatingToolbarDefaults.exitAlwaysScrollBehavior(
@@ -2176,6 +2223,16 @@ private fun TaskListPane(
             }
             keyboardController?.hide()
         }
+    }
+
+    // Pick mode rides the ordinary task search: entering it opens the search bar, and the view
+    // model's exclusion keeps the picked-into task (and its subtree) out of the results so a
+    // task can never be chosen as its own ancestor.
+    LaunchedEffect(pickMode) {
+        if (pickMode) searchActive = true
+    }
+    LaunchedEffect(pickParentFor) {
+        viewModel.setPickParent(pickParentFor)
     }
 
     var topBarHeight by remember { mutableStateOf(0.dp) }
@@ -2268,7 +2325,16 @@ private fun TaskListPane(
                 topPadding = listTopPadding,
                 bottomPadding =
                     if (searchActive) 88.dp + SEARCH_BAR_HEIGHT + 8.dp else 88.dp,
-                onTaskClick = { task -> onTaskClick(TaskEditDestination(task.id, task.uuid)) },
+                onTaskClick = { task ->
+                    if (pickMode) {
+                        // Pick instead of open: the tap lands the destination in the edit pane's
+                        // panel and the search bar folds back down.
+                        closeTaskSearch()
+                        onPickTask(task)
+                    } else {
+                        onTaskClick(TaskEditDestination(task.id, task.uuid))
+                    }
+                },
                 onCompleteTask = { task, newState ->
                     viewModel.onCompleteTask(task, newState)
                     if (newState) {
@@ -2283,6 +2349,7 @@ private fun TaskListPane(
                     viewModel.setFilter(filter)
                 },
                 is24Hour = org.tasks.time.is24HourFormat(),
+                highlightedTaskId = pickedTaskId,
             )
         }
 
@@ -2342,7 +2409,13 @@ private fun TaskListPane(
                     searchText = newText
                     viewModel.setSearchQuery(newText.ifBlank { null })
                 },
-                placeHolder = "Search", // TODO: use stringResource when kmp composeResources work for JVM
+                placeHolder = if (pickMode) {
+                    // Literal rather than stringResource: the placeholder is already a literal
+                    // (see the TODO above) and composeResources are not reliable on JVM here.
+                    "Find existing task..."
+                } else {
+                    "Search" // TODO: use stringResource when kmp composeResources work for JVM
+                },
                 onCloseClicked = { closeTaskSearch() },
                 onSearchClicked = { keyboardController?.hide() },
             )
