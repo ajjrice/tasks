@@ -48,13 +48,14 @@ import org.koin.compose.viewmodel.koinViewModel
 import org.tasks.themes.isDarkTheme
 import org.tasks.compose.PlatformBackHandler
 import org.tasks.compose.edit.AlarmsSection
-import org.tasks.compose.edit.DeleteTaskDialog
+import org.tasks.compose.edit.DeletePreviewRow
+import org.tasks.compose.edit.DeleteTaskPanel
 import org.tasks.compose.edit.DescriptionRow
 import org.tasks.compose.edit.DiscardChangesDialog
 import org.tasks.compose.edit.DueDateRow
 import org.tasks.compose.edit.EditScreenSection
 import org.tasks.compose.edit.ListPickerDialog
-import org.tasks.compose.edit.MakeParentTaskPanel
+import org.tasks.compose.edit.MoveIntoTaskPanel
 import org.tasks.compose.edit.MarkdownEditField
 import org.tasks.compose.edit.ParentBreadcrumb
 import org.tasks.compose.edit.PrioritySection
@@ -64,8 +65,6 @@ import org.tasks.compose.edit.StartDateRow
 import org.tasks.compose.edit.SubtasksSection
 import org.tasks.compose.edit.TagPickerDialog
 import org.tasks.compose.edit.TagsSection
-import org.tasks.compose.edit.TaskEditActionBar
-import org.tasks.compose.edit.TaskEditActionBarHeight
 import org.tasks.compose.edit.TaskEditCard
 import org.tasks.compose.edit.TaskEditCardRow
 import org.tasks.compose.edit.TaskEditCardRowContent
@@ -76,6 +75,7 @@ import org.tasks.compose.pickers.alarmToSelection
 import org.tasks.compose.pickers.dueDateFromSelection
 import org.tasks.compose.pickers.dueDateToSelection
 import org.tasks.time.is24HourFormat
+import org.tasks.data.DeletePreview
 import org.tasks.data.MakeParentTask
 import org.tasks.data.entity.Alarm
 import org.tasks.data.dao.CaldavDao
@@ -95,8 +95,10 @@ import org.tasks.viewmodel.EditScreenCustomizationViewModel
 import org.tasks.viewmodel.TaskEditViewModel
 import tasks.kmp.generated.resources.Res
 import tasks.kmp.generated.resources.back
+import tasks.kmp.generated.resources.delete_task
 import tasks.kmp.generated.resources.failed_to_load_task
 import tasks.kmp.generated.resources.make_parent_task
+import tasks.kmp.generated.resources.menu_discard_changes
 import tasks.kmp.generated.resources.no_list_available
 import tasks.kmp.generated.resources.save
 import tasks.kmp.generated.resources.sort_list
@@ -119,6 +121,23 @@ fun TaskEditScreen(
     filterTint: Int = 0,
     onOpenSubtask: (taskId: Long, remoteId: String, isDraft: Boolean) -> Unit = { _, _, _ -> },
     onClose: () -> Unit,
+    // Move-into-another-task wiring (see App's pick state): the panel's
+    // "existing task" field opens the list pane's search in pick mode for the
+    // task being edited, and the pick/clear callbacks round-trip through App
+    // so the list pane and this screen share one source of truth.
+    pickedExistingTask: PickedTask? = null,
+    onPickExistingOpen: (taskId: Long) -> Unit = {},
+    onPickFindFieldFocused: () -> Unit = {},
+    onPickQueryChange: (String) -> Unit = {},
+    onClearPickedExisting: () -> Unit = {},
+    onPickExistingCancel: () -> Unit = {},
+    // The move into an existing task has committed. [chain] is the picked
+    // task's own id plus its ancestors up to the root, in that order: the
+    // App scope switches the list to the target's list and expands the
+    // chain so the just-moved task is visible, not hidden behind folded
+    // rows. (Configurable later - see the feature's "show the new state"
+    // default.)
+    onMoveIntoCommitted: (listUuid: String, targetId: Long, chain: List<Long>) -> Unit = { _, _, _ -> },
 ) {
     val state by viewModel.state.collectAsState()
     val currentOnClose by rememberUpdatedState(onClose)
@@ -129,8 +148,51 @@ fun TaskEditScreen(
     val loadError by viewModel.loadError.collectAsState()
     val saving by viewModel.saving.collectAsState()
     var showMakeParentPanel by remember { mutableStateOf(false) }
+    // Pick mode has the panel's lifetime: the moment the panel opens, the list
+    // pane enters pick mode for the task being edited (row taps land the pick
+    // and the subtree is hidden before the first keystroke), and every close
+    // path - toolbar toggle, X, delete-panel swap, a successful accept -
+    // cancels it through one place instead of each callback remembering to.
+    LaunchedEffect(showMakeParentPanel, state.task.id) {
+        if (showMakeParentPanel) {
+            onPickExistingOpen(state.task.id)
+        } else {
+            onPickExistingCancel()
+        }
+    }
     var makeParentWorking by remember { mutableStateOf(false) }
     val makeParentScope = rememberCoroutineScope()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val taskDao = koinInject<TaskDao>()
+    var showDeletePanel by remember { mutableStateOf(false) }
+    var deleteRows by remember { mutableStateOf<List<DeletePreviewRow>>(emptyList()) }
+    var deleteWorking by remember { mutableStateOf(false) }
+
+    // The delete preview mirrors TaskDeleter.markDeleted exactly (recursive
+    // getChildren + read-only exclusion, see DeletePreview) so the panel can
+    // never promise to delete something it won't. Drafts aren't in the DB yet,
+    // so their staged subtree comes from the pane's state instead.
+    val buildDeletePreview: suspend () -> List<DeletePreviewRow> = {
+        if (state.task.id > 0) {
+            DeletePreview.forTask(taskDao, state.task.id).map { entry ->
+                DeletePreviewRow(
+                    title = entry.task.title.orEmpty(),
+                    indent = entry.depth,
+                    completed = entry.task.isCompleted,
+                    readOnly = entry.readOnly,
+                )
+            }
+        } else {
+            listOf(DeletePreviewRow(title = state.task.title.orEmpty())) +
+                    state.subtasks.map { row ->
+                        DeletePreviewRow(
+                            title = row.node.title.orEmpty(),
+                            indent = row.indent,
+                            completed = row.completed,
+                        )
+                    }
+        }
+    }
 
     val saveAndClose = { viewModel.save() }
 
@@ -156,11 +218,42 @@ fun TaskEditScreen(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
-                title = {},
+                title = {
+                    // "Move into new parent task", centred as the pane's hero
+                    // action. The TopAppBar title slot is left-aligned by
+                    // default, so the button is centred inside a full-width
+                    // box. Nav (back+save) and actions (discard+delete) are
+                    // two icons each, so the slot is symmetric and this is
+                    // true centre. Greyed out while there are unsaved edits -
+                    // the reparent operates on the saved row, and this action
+                    // does not save on the user's behalf. Hidden in practice
+                    // on lists that cannot nest (single-level accounts) by
+                    // the same gating.
+                    val canMakeParent = !state.isLoading &&
+                            !state.isDraft &&
+                            !saving &&
+                            !state.hasChanges &&
+                            state.list?.isSingleLevel != true
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        IconButton(
+                            onClick = {
+                                showDeletePanel = false
+                                showMakeParentPanel = !showMakeParentPanel
+                            },
+                            enabled = canMakeParent,
+                            modifier = Modifier.align(Alignment.Center),
+                        ) {
+                            SymbolIcon(
+                                name = TasksIcons.DRIVE_FILE_MOVE,
+                                contentDescription = stringResource(Res.string.make_parent_task),
+                            )
+                        }
+                    }
+                },
                 navigationIcon = {
                     // Save floats next to back on the left: the plain save and the
                     // back (save + close) are the two "leave this edit" actions, so
-                    // they sit together. The make-parent action stays on the right.
+                    // they sit together. Matches the Android edit window (save left).
                     Row {
                         IconButton(onClick = saveAndClose, enabled = !saving) {
                             SymbolIcon(
@@ -186,22 +279,52 @@ fun TaskEditScreen(
                     }
                 },
                 actions = {
-                    // "Move into new parent task": greyed out while there are unsaved
-                    // edits - the reparent operates on the saved row, and this action
-                    // does not save on the user's behalf. Hidden in practice on lists
-                    // that cannot nest (single-level accounts) by the same gating.
-                    val canMakeParent = !state.isLoading &&
-                            !state.isDraft &&
-                            !saving &&
-                            !state.hasChanges &&
-                            state.list?.isSingleLevel != true
+                    // Discard: mirrors the save gating (nothing to discard while
+                    // clean). Replaces the three-dot menu item on the old floater.
                     IconButton(
-                        onClick = { showMakeParentPanel = !showMakeParentPanel },
-                        enabled = canMakeParent,
+                        onClick = {
+                            keyboardController?.hide()
+                            if (state.hasChanges) {
+                                showDiscardConfirmation = true
+                            } else {
+                                viewModel.discardChanges()
+                            }
+                        },
+                        enabled = !state.isLoading &&
+                                !state.isDraft &&
+                                !saving &&
+                                state.hasChanges,
                     ) {
                         SymbolIcon(
-                            name = TasksIcons.DRIVE_FILE_MOVE,
-                            contentDescription = stringResource(Res.string.make_parent_task),
+                            name = TasksIcons.CLEAR,
+                            contentDescription = stringResource(Res.string.menu_discard_changes),
+                        )
+                    }
+                    // Delete: the tree preview panel is the confirmation. Available
+                    // for drafts too, as the old floater's delete was; greyed only
+                    // while busy. Replaces the three-dot menu item on the old floater.
+                    IconButton(
+                        onClick = {
+                            keyboardController?.hide()
+                            if (deleteWorking) return@IconButton
+                            deleteWorking = true
+                            makeParentScope.launch {
+                                deleteRows = try {
+                                    buildDeletePreview()
+                                } catch (e: Exception) {
+                                    log.w(e) { "Failed to build delete preview" }
+                                    listOf(DeletePreviewRow(title = state.task.title.orEmpty()))
+                                }
+                                deleteWorking = false
+                                showMakeParentPanel = false
+                                showDeletePanel = true
+                            }
+                        },
+                        enabled = !state.isLoading && !saving,
+                    ) {
+                        SymbolIcon(
+                            name = TasksIcons.DELETE,
+                            contentDescription = stringResource(Res.string.delete_task),
                         )
                     }
                 },
@@ -261,13 +384,10 @@ fun TaskEditScreen(
                     var showStartDatePicker by remember { mutableStateOf(false) }
                     var showRecurrencePicker by remember { mutableStateOf(false) }
                     var showAlarmDateTimePicker by remember { mutableStateOf(false) }
-                    var showDeleteConfirmation by remember { mutableStateOf(false) }
                     var alarmToReplace by remember { mutableStateOf<Alarm?>(null) }
                     var pickerToken by remember { mutableStateOf(0) }
                     val reminderViewModel = koinViewModel<ReminderControlSetViewModel>()
                     val is24Hour = is24HourFormat()
-                    val keyboardController = LocalSoftwareKeyboardController.current
-                    val taskDao = koinInject<TaskDao>()
                     val caldavDao = koinInject<CaldavDao>()
                     val taskSaver = koinInject<TaskSaver>()
                     val taskMover = koinInject<TaskMover>()
@@ -283,14 +403,27 @@ fun TaskEditScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
-                            .padding(TaskEditIslandInset),
+                            // The island inset is kept on the sides and bottom, but not the
+                            // top: the list pane's first row starts flush at its (overlay)
+                            // app bar's bottom edge, so the edit content does the same here
+                            // and the two panes' content tops line up.
+                            .padding(
+                                start = TaskEditIslandInset,
+                                end = TaskEditIslandInset,
+                                bottom = TaskEditIslandInset,
+                            ),
                     ) {
                         if (showMakeParentPanel) {
-                            MakeParentTaskPanel(
+                            MoveIntoTaskPanel(
                                 modifier = Modifier.padding(bottom = 16.dp),
                                 working = makeParentWorking,
                                 keyboardController = keyboardController,
-                                onAccept = { title ->
+                                pickedTask = pickedExistingTask,
+                                onPickExistingOpen = { onPickExistingOpen(state.task.id) },
+                                onFindFieldFocus = onPickFindFieldFocused,
+                                onFindQueryChange = onPickQueryChange,
+                                onClearPicked = onClearPickedExisting,
+                                onAcceptNew = { title ->
                                     makeParentWorking = true
                                     makeParentScope.launch {
                                         try {
@@ -310,8 +443,74 @@ fun TaskEditScreen(
                                             taskRequests.open(
                                                 TaskEditDestination(parent.id, parent.uuid),
                                             )
+                                            // The panel is gone; if the panel had opened
+                                            // pick mode along the way, leave it.
+                                            onPickExistingCancel()
                                         } catch (e: Exception) {
                                             log.e(e) { "Failed to make parent task" }
+                                            makeParentWorking = false
+                                        }
+                                    }
+                                },
+                                onAcceptExisting = { targetId ->
+                                    makeParentWorking = true
+                                    makeParentScope.launch {
+                                        try {
+                                            // Cycle backstop: walk the picked task's ancestors.
+                                            // The pick search already hides this task and its
+                                            // subtree, so a hit here means stale or corrupt
+                                            // data - and moving anyway would nest the task
+                                            // under itself, a parent cycle the recursive
+                                            // children query would then follow forever (it OOMs
+                                            // the JVM). Refuse and clear the pick so the user
+                                            // can choose again.
+                                            var cursor = targetId
+                                            var steps = 0
+                                            var rejected = false
+                                            // The walked chain doubles as the
+                                            // expansion list for the commit:
+                                            // target first, then its ancestors.
+                                            val chain = mutableListOf<Long>()
+                                            while (cursor != 0L && steps < 1000) {
+                                                if (cursor == state.task.id) {
+                                                    rejected = true
+                                                    break
+                                                }
+                                                chain.add(cursor)
+                                                cursor = taskDao.fetch(cursor)?.parent ?: 0L
+                                                steps++
+                                            }
+                                            if (rejected) {
+                                                log.e { "Refused to move $targetId: pick is inside the task's own subtree" }
+                                                onClearPickedExisting()
+                                                makeParentWorking = false
+                                                return@launch
+                                            }
+                                            val calendars = caldavDao.getCalendars(listOf(targetId))
+                                            val listUuid = calendars.firstOrNull()?.uuid
+                                            if (listUuid == null) {
+                                                log.e { "No calendar for picked task $targetId" }
+                                            } else {
+                                                // The app's native parent-change path: same
+                                                // TaskMover.move every other move uses, so
+                                                // list, CalDAV remote parent, dirty marking
+                                                // and the refresh broadcast all happen as they
+                                                // would for a drag-and-drop move.
+                                                taskMover.move(state.task.id, listUuid, targetId)
+                                                // Show the new state: the list
+                                                // becomes the target's list and
+                                                // its chain unfolds so the moved
+                                                // task is visible. Runs before
+                                                // the cancel so the cancel's
+                                                // filter restore does not clobber
+                                                // it.
+                                                onMoveIntoCommitted(listUuid, targetId, chain)
+                                                showMakeParentPanel = false
+                                                onPickExistingCancel()
+                                            }
+                                            makeParentWorking = false
+                                        } catch (e: Exception) {
+                                            log.e(e) { "Failed to move into existing task" }
                                             makeParentWorking = false
                                         }
                                     }
@@ -319,6 +518,22 @@ fun TaskEditScreen(
                                 onCancel = {
                                     makeParentWorking = false
                                     showMakeParentPanel = false
+                                    onPickExistingCancel()
+                                },
+                            )
+                        }
+                        if (showDeletePanel) {
+                            DeleteTaskPanel(
+                                modifier = Modifier.padding(bottom = 16.dp),
+                                rows = deleteRows,
+                                working = deleteWorking,
+                                keyboardController = keyboardController,
+                                onDelete = {
+                                    showDeletePanel = false
+                                    viewModel.delete()
+                                },
+                                onCancel = {
+                                    showDeletePanel = false
                                 },
                             )
                         }
@@ -452,9 +667,7 @@ fun TaskEditScreen(
                                 null
                             },
                             allowsNesting = state.allowsNesting,
-                            bottomInset = TaskEditActionBarHeight +
-                                FloatingToolbarBottomMargin +
-                                TaskEditIslandInset,
+                            bottomInset = TaskEditIslandInset,
                             onAddSubtask = { viewModel.addSubtask() },
                             onAddAfter = { node -> viewModel.addSubtask(after = node) },
                             onOpenSubtask = { node ->
@@ -470,40 +683,9 @@ fun TaskEditScreen(
                             onRestoreSubtask = viewModel::restoreSubtask,
                             onSubtaskFocused = viewModel::onSubtaskFocused,
                         )
-                            }
                         }
-                        Spacer(
-                            modifier = Modifier.height(
-                                TaskEditActionBarHeight + FloatingToolbarBottomMargin
-                            )
-                        )
+                        }
                     }
-                    TaskEditActionBar(
-                        filterTint = filterTint,
-                        onMarkCompleted = {
-                            keyboardController?.hide()
-                            viewModel.markComplete()
-                        },
-                        onDiscardChanges = {
-                            keyboardController?.hide()
-                            if (state.hasChanges) {
-                                showDiscardConfirmation = true
-                            } else {
-                                viewModel.discardChanges()
-                            }
-                        },
-                        onDeleteTask = {
-                            keyboardController?.hide()
-                            showDeleteConfirmation = true
-                        },
-                        enabled = !saving,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(
-                                horizontal = TaskEditIslandInset,
-                                vertical = FloatingToolbarBottomMargin,
-                            ),
-                    )
                     if (showDiscardConfirmation) {
                         DiscardChangesDialog(
                             onDiscard = {
@@ -511,15 +693,6 @@ fun TaskEditScreen(
                                 viewModel.discardChanges()
                             },
                             onDismiss = { showDiscardConfirmation = false },
-                        )
-                    }
-                    if (showDeleteConfirmation) {
-                        DeleteTaskDialog(
-                            onDelete = {
-                                showDeleteConfirmation = false
-                                viewModel.delete()
-                            },
-                            onDismiss = { showDeleteConfirmation = false },
                         )
                     }
                     if (showDueDatePicker) {

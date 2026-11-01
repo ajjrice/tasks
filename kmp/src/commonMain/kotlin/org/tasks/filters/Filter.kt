@@ -36,6 +36,17 @@ abstract class Filter : FilterListItem, CommonParcelable {
     open fun supportsSorting(): Boolean = true
     open fun disableHeaders(): Boolean = !supportsSorting()
 
+    /**
+     * The filter whose sort identity the list query machinery treats this as.
+     * [org.tasks.data.TaskListQuery] picks the pane's ordering strategy from
+     * the filter's type and sort capabilities, so SQL-narrowing wrappers
+     * (e.g. [PickSearchFilter]) must present the wrapped list's identity -
+     * otherwise the pane re-sorts to the generic strategy the moment the
+     * wrapper takes over the query. Plain filters are their own identity.
+     */
+    open val sortIdentity: Filter
+        get() = this
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is Filter) return false
@@ -51,12 +62,14 @@ fun Filter.key(): String = when (this) {
     is PlaceFilter -> "place_${place.uid}"
     is TagFilter -> "tag_${tagData.remoteId}"
     is MyTasksFilter -> "builtin_my_tasks"
+    is PickAllFilter -> "builtin_pick_all"
     is TodayFilter -> "builtin_today"
     is RecentlyModifiedFilter -> "builtin_recently_modified"
     is TimerFilter -> "builtin_timer"
     is SnoozedFilter -> "builtin_snoozed"
     is NotificationsFilter -> "builtin_notifications"
     is SearchFilter -> "builtin_search"
+    is PickSearchFilter -> "builtin_pick_search"
     is EmptyFilter -> "builtin_empty"
     is DebugFilter -> title
     else -> {

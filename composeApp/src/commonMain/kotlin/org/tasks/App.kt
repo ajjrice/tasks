@@ -16,6 +16,7 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -94,6 +95,8 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.takeOrElse
@@ -103,6 +106,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -153,6 +157,8 @@ import org.tasks.billing.SubscriptionProvider
 import org.tasks.billing.SubscriptionSkus
 import org.tasks.caldav.TasksAccountDataRepository
 import org.tasks.compose.components.AnimatedBanner
+import org.tasks.compose.components.SEARCH_BAR_HEIGHT
+import org.tasks.compose.components.SearchBar
 import org.tasks.compose.APP_STORE_SIGN_IN_PROVIDERS
 import org.tasks.compose.DEFAULT_SIGN_IN_PROVIDERS
 import org.tasks.compose.NavigationBarScrim
@@ -249,6 +255,7 @@ import org.tasks.filters.FilterSettingsViewModel
 import org.tasks.filters.key
 import org.tasks.filters.FilterPreferenceCodec
 import org.tasks.filters.MyTasksFilter
+import org.tasks.filters.PickAllFilter
 import org.tasks.filters.SearchFilter
 import org.tasks.preferences.TasksPreferences
 import org.tasks.filters.TagFilter
@@ -760,6 +767,50 @@ fun App(
                 )
             }
 
+            // "Move into another task" pick state: while [pickTargetTaskId] is
+            // non-null the list pane runs in pick mode for that task - its
+            // search is open, the search hides the task and its subtree, and
+            // tapping a row picks it as the destination instead of opening it.
+            var pickTargetTaskId by rememberSaveable { mutableStateOf<Long?>(null) }
+            var pickedExistingTask by remember { mutableStateOf<PickedTask?>(null) }
+            // The edit pane's "Find existing task..." field is the pick's
+            // search input: its text live-filters the list pane's results
+            // (see [TaskListPane]), which hides its own search bar while
+            // pick mode runs.
+            var pickQuery by rememberSaveable { mutableStateOf("") }
+            // Focusing the find field widens the pick search to My Tasks:
+            // typing a search means the destination is not visible in the
+            // currently selected list. [pickExpandedToAll] remembers that
+            // widening and [pickSnapshotFilter] remembers the filter that
+            // was selected when the panel OPENED, so any cancel path (X,
+            // Esc, clearing the find field, closing the edit pane) restores
+            // exactly that list - even if the drawer was used to poke
+            // around while searching.
+            var pickExpandedToAll by rememberSaveable { mutableStateOf(false) }
+            var pickSnapshotFilter by remember { mutableStateOf<Filter?>(null) }
+
+            fun endPick() {
+                pickTargetTaskId = null
+                pickedExistingTask = null
+                pickQuery = ""
+                if (pickExpandedToAll) {
+                    pickExpandedToAll = false
+                    pickSnapshotFilter?.let { taskListViewModel?.setFilter(it) }
+                    pickSnapshotFilter = null
+                }
+            }
+
+            // The pick only exists for the edit pane it was started from: every path that closes
+            // that pane (the drawer's list switch, the pane's close button, a restored back
+            // stack) leaves the list pane behind, and a surviving pick would keep routing row
+            // taps to onPickTask instead of opening the tapped task and keep the view model
+            // masking the selected filter with the pick's all-task search - the ""-masks-the-
+            // filter class of regression from upstream PR #4803. Reset the state so the pane
+            // returns to the ordinary list.
+            LaunchedEffect(hasDetailOpen) {
+                if (!hasDetailOpen) endPick()
+            }
+
             // The filter is passed in rather than read from taskListState: a caller that just
             // called setFilter still sees the previous value here, because the collector that
             // publishes it hasn't been dispatched yet.
@@ -824,7 +875,10 @@ fun App(
                         if (materialDrawerState.isOpen) {
                             chromeScope.launch { materialDrawerState.close() }
                         }
-                        closeDetail()
+                        // Move-into pick: the drawer narrows the pick search, so the edit pane
+                        // (with its open panel) stays and the new selection scopes the results.
+                        // Every other drawer choice closes the detail as before.
+                        if (pickTargetTaskId == null) closeDetail()
                     }
                     is DrawerItem.Header -> drawerViewModel?.toggleCollapsed(item.header)
                     is DrawerItem.SignIn -> {}
@@ -846,6 +900,11 @@ fun App(
             // The modal drawer needs its own. With the sidebar pinned to a rail both are composed
             // at once, and two lists can't share one LazyListState.
             val modalDrawerListState = rememberLazyListState()
+
+            // Shared search mode: the task list's search button toggles search in both the task
+            // column (search bar at its bottom) and the navigation drawer (search box at the
+            // drawer's bottom). Deliberately has no effect on the drawer's expand/collapse state.
+            var searchActive by rememberSaveable { mutableStateOf(false) }
 
             TaskListChrome(
                 onCloudSignIn = { cloudSignInSource = AnalyticsEvents.SOURCE_DRAWER },
@@ -889,6 +948,8 @@ fun App(
                 onDrawerItemClick = onDrawerItemClick,
                 onAddClick = onAddClick,
                 onSidebarSearchCollapse = { sidebarSearchCollapsed = true },
+                searchActive = searchActive,
+                onSearchActiveChange = { searchActive = it },
             ) {
             NavDisplay(
                 backStack = backStack,
@@ -1028,8 +1089,21 @@ fun App(
                                 onSubscribe = { backStack.push(PricingDestination()) },
                                 onAddAccount = { backStack.push(AddAccountDestination) },
                                 onTaskClick = { destination -> openTaskFromList(destination) },
+                                pickMode = pickTargetTaskId != null,
+                                pickParentFor = pickTargetTaskId,
+                                pickedTaskId = pickedExistingTask?.id,
+                                onPickTask = { task ->
+                                    pickedExistingTask = PickedTask(task.id, task.title.orEmpty())
+                                    // The field in the panel now shows the picked
+                                    // title, not the last query typed.
+                                    pickQuery = ""
+                                },
+                                pickQuery = pickQuery,
+                                onPickModeBack = { endPick() },
                                 onCreateTask = onCreateTask,
                                 onMenuClick = onMenuClick,
+                                searchActive = searchActive,
+                                onSearchActiveChange = { searchActive = it },
                             )
                         } else {
                             LoadingPane()
@@ -1062,6 +1136,69 @@ fun App(
                                 onSubscribe = { backStack.push(PricingDestination()) },
                                 onListsChanged = { drawerViewModel?.updateFilters() },
                                 onClose = { closeDetail() },
+                                pickedExistingTask = pickedExistingTask,
+                                onPickExistingOpen = { taskId ->
+                                    if (pickTargetTaskId == null) {
+                                        // Panel just opened: snapshot the
+                                        // selected filter for the cancel-
+                                        // time restore and arm the find-
+                                        // field widening. A later re-open
+                                        // (keystroke re-asserting pick mode)
+                                        // keeps the original snapshot.
+                                        pickSnapshotFilter = currentTaskListState?.filter
+                                        pickExpandedToAll = false
+                                    }
+                                    pickTargetTaskId = taskId
+                                },
+                                onPickFindFieldFocused = {
+                                    if (pickTargetTaskId != null && !pickExpandedToAll &&
+                                        currentTaskListState?.filter !is PickAllFilter
+                                    ) {
+                                        // Widen the pane to every active task at
+                                        // every depth: the pick has to be able
+                                        // to target subtasks, which the My Tasks
+                                        // scope (PARENT = 0) never shows.
+                                        chromeScope.launch {
+                                            if (currentTaskListState?.filter !is PickAllFilter) {
+                                                taskListViewModel?.setFilter(PickAllFilter.create())
+                                                pickExpandedToAll = true
+                                            }
+                                        }
+                                    }
+                                },
+                                onPickQueryChange = { query ->
+                                    pickQuery = query
+                                    // A cleared find field with no pick in flight leaves
+                                    // pick mode: the list pane goes back to the selected
+                                    // filter. (A pick still shows in the field, so it keeps
+                                    // pick mode alive until it is committed or cleared.)
+                                    if (query.isEmpty() && pickedExistingTask == null) {
+                                        endPick()
+                                    }
+                                },
+                                onClearPickedExisting = { pickedExistingTask = null },
+                                onPickExistingCancel = { endPick() },
+                                onMoveIntoCommitted = { listUuid, _, chain ->
+                                    // The move is committed: the cancel-time
+                                    // restore must not clobber the new state.
+                                    pickExpandedToAll = false
+                                    pickSnapshotFilter = null
+                                    // Show the new state: the list pane becomes
+                                    // the task's new list, reusing the drawer's
+                                    // own filter instance so its highlight
+                                    // follows.
+                                    val targetFilter = drawerViewModel?.state?.value?.drawerItems
+                                        ?.filterIsInstance<DrawerItem.Filter>()
+                                        ?.firstOrNull { (it.filter as? CaldavFilter)?.uuid == listUuid }
+                                        ?.filter
+                                    if (targetFilter != null) {
+                                        taskListViewModel?.setFilter(targetFilter)
+                                    }
+                                    // Unfold the picked task and its ancestors
+                                    // so the moved task is visible and not left
+                                    // behind a folded row.
+                                    chain.forEach { taskListViewModel?.toggleSubtasks(it, false) }
+                                },
                             )
                         } else {
                             LoadingPane()
@@ -1660,6 +1797,8 @@ private fun TaskListChrome(
     onAddClick: (DrawerItem.Header) -> Unit,
     onCloudSignIn: () -> Unit,
     onSidebarSearchCollapse: () -> Unit = {},
+    searchActive: Boolean,
+    onSearchActiveChange: (Boolean) -> Unit,
     content: @Composable () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -1693,6 +1832,8 @@ private fun TaskListChrome(
                     onAddClick = onAddClick,
                     onErrorClick = { /* TODO: show sync error */ },
                     onSignIn = onCloudSignIn,
+                    searchActive = searchActive,
+                    onSearchActiveChange = onSearchActiveChange,
                     // Hoisted for the same reason as the sidebar's: this sheet is disposed every
                     // time the drawer closes, and it is not inside a nav entry whose saveable
                     // state the decorator would preserve.
@@ -1763,6 +1904,8 @@ private fun TaskListChrome(
                         onSearchCollapse = onSidebarSearchCollapse,
                         listState = sidebarListState,
                         searchButtonInset = SearchButtonInset,
+                        searchActive = searchActive,
+                        onSearchActiveChange = onSearchActiveChange,
                     )
                     val sidebarScrimColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
                     StatusBarScrim(
@@ -1903,6 +2046,18 @@ private fun TaskListScreen(
     onTaskClick: (TaskEditDestination) -> Unit,
     onCreateTask: () -> Unit,
     onMenuClick: () -> Unit,
+    searchActive: Boolean,
+    onSearchActiveChange: (Boolean) -> Unit,
+    // Move-into pick mode (see [pickTargetTaskId] in App): the edit pane's
+    // "Find existing task..." field is the search input ([pickQuery] live-
+    // filters these rows), this pane hides its own search bar, row taps pick
+    // instead of open, and the picked row is highlighted.
+    pickMode: Boolean = false,
+    pickParentFor: Long? = null,
+    pickedTaskId: Long? = null,
+    onPickTask: (TaskContainer) -> Unit = {},
+    pickQuery: String = "",
+    onPickModeBack: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val chipDataProvider = koinInject<ChipDataProvider>()
@@ -1952,6 +2107,14 @@ private fun TaskListScreen(
         showFilterSettings = editableCustomFilter != null,
         onFilterSettingsClick = { editableCustomFilter?.let { editFilterId = it.id } },
         onCreateTask = onCreateTask,
+        searchActive = searchActive,
+        onSearchActiveChange = onSearchActiveChange,
+        pickMode = pickMode,
+        pickParentFor = pickParentFor,
+        pickedTaskId = pickedTaskId,
+        onPickTask = onPickTask,
+        pickQuery = pickQuery,
+        onPickModeBack = onPickModeBack,
         modifier = Modifier.fillMaxSize(),
     )
 
@@ -2061,6 +2224,20 @@ private fun TaskEditEntry(
     filterTint: Int = 0,
     onOpenSubtask: (taskId: Long, remoteId: String, isDraft: Boolean) -> Unit,
     onClose: () -> Unit,
+    // Move-into pick state round-trip (owned in App, see the pick state there).
+    pickedExistingTask: PickedTask? = null,
+    onPickExistingOpen: (taskId: Long) -> Unit = {},
+    onPickFindFieldFocused: () -> Unit = {},
+    onPickQueryChange: (String) -> Unit = {},
+    onClearPickedExisting: () -> Unit = {},
+    onPickExistingCancel: () -> Unit = {},
+    // The move into an existing task has committed. [chain] is the picked
+    // task's own id plus its ancestors up to the root, in that order: the
+    // App scope switches the list to the target's list and expands the
+    // chain so the just-moved task is visible, not hidden behind folded
+    // rows. (Configurable later - see the feature's "show the new state"
+    // default.)
+    onMoveIntoCommitted: (listUuid: String, targetId: Long, chain: List<Long>) -> Unit = { _, _, _ -> },
 ) {
     val taskEditViewModel = koinViewModel<TaskEditViewModel> {
         org.koin.core.parameter.parametersOf(destination)
@@ -2077,6 +2254,13 @@ private fun TaskEditEntry(
         filterTint = filterTint,
         onOpenSubtask = onOpenSubtask,
         onClose = onClose,
+        pickedExistingTask = pickedExistingTask,
+        onPickExistingOpen = onPickExistingOpen,
+        onPickFindFieldFocused = onPickFindFieldFocused,
+        onPickQueryChange = onPickQueryChange,
+        onClearPickedExisting = onClearPickedExisting,
+        onPickExistingCancel = onPickExistingCancel,
+        onMoveIntoCommitted = onMoveIntoCommitted,
     )
 
     NewListDialogHost(
@@ -2312,7 +2496,21 @@ private fun TaskListPane(
     onFilterSettingsClick: () -> Unit = {},
     onTaskClick: (TaskEditDestination) -> Unit,
     onCreateTask: () -> Unit,
+    searchActive: Boolean,
+    onSearchActiveChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    // Move-into pick mode (see the pick state in App): [pickParentFor] is the
+    // task being moved - the view model excludes it and its subtree from the
+    // results - and row taps pick instead of open. The search text is owned
+    // by the edit pane's "Find existing task..." field and arrives here as
+    // [pickQuery]; while pick mode runs this pane's own search bar stays
+    // hidden and the rows are just the live results.
+    pickMode: Boolean = false,
+    pickParentFor: Long? = null,
+    pickedTaskId: Long? = null,
+    onPickTask: (TaskContainer) -> Unit = {},
+    pickQuery: String = "",
+    onPickModeBack: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val refreshState = rememberPullToRefreshState()
@@ -2392,6 +2590,54 @@ private fun TaskListPane(
         }
     }
 
+    // Task-list search. The open/closed mode is shared with the navigation drawer's search box
+    // (searchActive is owned by the task screen); the query stays local: this bar filters tasks
+    // via TaskListViewModel, the drawer's box filters the drawer's lists/tags.
+    var searchText by rememberSaveable { mutableStateOf("") }
+    val searchFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    fun closeTaskSearch() {
+        onSearchActiveChange(false)
+    }
+
+    // The shared mode can be turned off from either column: focus the field when it opens, and
+    // when it closes clear the local query so queryFilterFor falls back to the active filter;
+    // null (not "") is required by the view model's tri-state contract (blank-not-null == My
+    // Tasks).
+    LaunchedEffect(searchActive, pickMode) {
+        if (searchActive && !pickMode) {
+            searchFocusRequester.requestFocus()
+        } else {
+            if (searchText.isNotEmpty()) {
+                searchText = ""
+                viewModel.setSearchQuery(null)
+            }
+            keyboardController?.hide()
+        }
+    }
+
+    // Pick mode drives the ordinary task search from the edit pane: the view
+    // model's exclusion keeps the picked-into task (and its subtree) out of
+    // the results - even before anything has been typed - so a task can
+    // never be chosen as its own ancestor. The effect only acts on mode
+    // transitions (and queries while in the mode): a no-op first run must not
+    // clobber a search query the view model restored from a previous session.
+    var wasPickMode by remember { mutableStateOf(false) }
+    LaunchedEffect(pickMode, pickParentFor, pickQuery) {
+        if (pickMode) {
+            if (!wasPickMode) {
+                wasPickMode = true
+                viewModel.setPickParent(pickParentFor)
+            }
+            viewModel.setSearchQuery(pickQuery.ifBlank { "" })
+        } else if (wasPickMode) {
+            wasPickMode = false
+            viewModel.setPickParent(null)
+            viewModel.setSearchQuery(null)
+        }
+    }
+
     var topBarHeight by remember { mutableStateOf(0.dp) }
     var topBarHeightPx by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     var topBarOffsetPx by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
@@ -2466,6 +2712,12 @@ private fun TaskListPane(
         // constraints from padded descendants (e.g. FloatingToolbar's 16.dp padding)
         // and from the ExitAlwaysFloatingToolbarScrollBehavior layout modifier.
         if (maxWidth < 48.dp || maxHeight < 48.dp) return@BoxWithConstraints
+        // Back collapses the task search bar, or - while pick mode runs and
+        // the bar is hidden - leaves pick mode via the edit pane.
+        PlatformBackHandler(enabled = searchActive || pickMode, onBack = {
+            if (pickMode) onPickModeBack() else closeTaskSearch()
+        })
+        val listTopPadding = topBarHeight
         when (val results = state.tasks) {
             is TasksResults.Loading -> Box(
                 modifier = Modifier.fillMaxSize(),
@@ -2515,12 +2767,23 @@ private fun TaskListPane(
                         chipDataProvider = chipDataProvider,
                         listState = listState,
                         topPadding = topBarHeight,
+                        bottomPadding =
+                            if (searchActive) 88.dp + SEARCH_BAR_HEIGHT + 8.dp else 88.dp,
                         selectedTaskId = selectedTaskId,
                         dragEnabled = manualSort,
                         onTaskDrop = { taskId, dropIndex -> dropTask(taskId, dropIndex) },
                         onTaskReparent = { taskId, targetTaskId -> reparentTask(taskId, targetTaskId) },
                         onTaskOutdent = { taskId, dropIndex -> outdentTask(taskId, dropIndex) },
-                        onTaskClick = { task -> onTaskClick(TaskEditDestination(task.id, task.uuid)) },
+                        onTaskClick = { task ->
+                            if (pickMode) {
+                                // Pick instead of open: the tap lands the destination in
+                                // the edit pane's panel; the rows stay put so another
+                                // row can be tapped to re-pick.
+                                onPickTask(task)
+                            } else {
+                                onTaskClick(TaskEditDestination(task.id, task.uuid))
+                            }
+                        },
                         onCompleteTask = { task, newState ->
                             viewModel.onCompleteTask(task, newState)
                             if (newState) {
@@ -2535,6 +2798,7 @@ private fun TaskListPane(
                             viewModel.setFilter(filter)
                         },
                         is24Hour = org.tasks.time.is24HourFormat(),
+                        highlightedTaskId = pickedTaskId,
                     )
                 }
             }
@@ -2580,6 +2844,31 @@ private fun TaskListPane(
             ),
         )
 
+        if (searchActive && !pickMode) {
+            // The search bar sits at the bottom of the task column, below the tasks (which
+            // reserve bottom padding for it). It is independent of the navigation drawer's
+            // filter search: typing here filters tasks via TaskListViewModel.setSearchQuery
+            // (-> SearchFilter over all tasks), and the view model restores the active filter
+            // automatically when the query is cleared (null). It is hidden while pick mode
+            // runs: the edit pane's field is the search input then.
+            SearchBar(
+                modifier = Modifier
+                    .focusRequester(searchFocusRequester)
+                    .align(Alignment.BottomCenter)
+                    .platformNavigationBarsPadding()
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                text = searchText,
+                onTextChange = { newText ->
+                    searchText = newText
+                    viewModel.setSearchQuery(newText.ifBlank { null })
+                },
+                placeHolder = "Search", // TODO: use stringResource when kmp composeResources work for JVM
+                onCloseClicked = { closeTaskSearch() },
+                onSearchClicked = { keyboardController?.hide() },
+            )
+        }
+
         val scrimColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
         StatusBarScrim(color = scrimColor, modifier = Modifier.align(Alignment.TopCenter))
         NavigationBarScrim(color = scrimColor, modifier = Modifier.align(Alignment.BottomCenter))
@@ -2598,10 +2887,18 @@ private fun TaskListPane(
             canMoveDown = canMoveDown,
             onMoveUp = { moveSelectedTask(up = true) },
             onMoveDown = { moveSelectedTask(up = false) },
+            searchActive = searchActive && !pickMode,
+            onSearchClick = {
+                // While pick mode runs the edit pane's field is the search
+                // input and this pane's bar stays hidden, so the shared
+                // toggle is inert rather than opening a bar that cannot be shown.
+                if (!pickMode) onSearchActiveChange(!searchActive)
+            },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .platformNavigationBarsPadding()
-                .padding(16.dp),
+                .padding(16.dp)
+                .padding(bottom = if (searchActive) SEARCH_BAR_HEIGHT + 8.dp else 0.dp),
         )
     }
 }
@@ -3160,6 +3457,9 @@ private fun FloatingToolbar(
     canMoveDown: Boolean = false,
     onMoveUp: () -> Unit = {},
     onMoveDown: () -> Unit = {},
+    /** True while the task-list search bar (opened by the search FAB below) is shown. */
+    searchActive: Boolean = false,
+    onSearchClick: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val barColors = floatingBarColors(filterTint)
@@ -3175,6 +3475,11 @@ private fun FloatingToolbar(
     )
     HorizontalFloatingToolbar(
         expanded = true,
+        // The floatingActionButton slot is measured as a single 56dp square by
+        // HorizontalFloatingToolbar, so it can only host one FAB. The "New task" button lives here
+        // in its original location; the task-list search toggle moved to the icon-button row below
+        // (next to sort). A second FAB in this slot overflowed the 56dp box and clipped the add
+        // button off the right edge of the window on desktop.
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onAddClick,
@@ -3207,6 +3512,18 @@ private fun FloatingToolbar(
             IconButton(onClick = onMoveDown, enabled = canMoveDown) {
                 SymbolIcon(TasksIcons.KEYBOARD_ARROW_DOWN, contentDescription = "Move task down")
             }
+        }
+        // Task-list search toggle. Kept out of the navigation drawer (whose search filters the
+        // drawer's own lists/tags); this is a separate, task-list search affordance that toggles
+        // the search bar hoisted to the top of the task list. Rendered as a toolbar icon button —
+        // not a second FAB — so it fits the fixed-size FAB slot model without clipping the add
+        // button.
+        IconButton(onClick = onSearchClick) {
+            SymbolIcon(
+                if (searchActive) TasksIcons.CLEAR else TasksIcons.SEARCH,
+                contentDescription =
+                    if (searchActive) "Close search" else "Search tasks",
+            )
         }
     }
 }

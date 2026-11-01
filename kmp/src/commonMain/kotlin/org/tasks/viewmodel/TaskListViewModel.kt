@@ -32,6 +32,7 @@ import org.tasks.filters.EmptyFilter
 import org.tasks.filters.Filter
 import org.tasks.filters.FilterImpl
 import org.tasks.filters.MyTasksFilter
+import org.tasks.filters.PickSearchFilter
 import org.tasks.filters.SearchFilter
 import org.tasks.filters.key
 import org.tasks.kmp.org.tasks.time.DateFormatter
@@ -91,8 +92,19 @@ open class TaskListViewModel(
      * flow stays at this value and the runtime collection is a no-op.
      */
     private val isPerListSortEnabled: Boolean = false,
-    private val createSearchFilter: (String) -> Filter = { query ->
-        SearchFilter(title = query, query = query)
+    private val createSearchFilter: (String, Set<Long>) -> Filter = { query, excluded ->
+        SearchFilter(title = query, query = query, excludedTaskIds = excluded)
+    },
+    // Pick mode keeps the selected filter's scope in play (drawer switches
+    // narrow the pick search) instead of searching all tasks.
+    private val createPickSearchFilter: (Filter, String, Set<Long>) -> Filter = {
+        base, query, excluded ->
+        PickSearchFilter(
+            title = base.title,
+            base = base,
+            query = query,
+            excludedTaskIds = excluded,
+        )
     },
     refreshFlow: Flow<Unit> = emptyFlow(),
 ) : ViewModel() {
@@ -101,6 +113,11 @@ open class TaskListViewModel(
         val filter: Filter = EmptyFilter(),
         val now: Long = currentTimeMillis(),
         val searchQuery: String? = null,
+        // Non-null while the edit pane's "move into another task" panel is
+        // choosing an existing task: the search field then hides this task and
+        // its whole subtree so it cannot be picked as its own ancestor.
+        val pickParentFor: Long? = null,
+        val pickParentExcluded: Set<Long> = emptySet(),
         val tasks: TasksResults = TasksResults.Loading,
         val syncOngoing: Boolean = false,
         val collapsed: Set<Long> = setOf(SectionedDataSource.HEADER_COMPLETED),
@@ -134,9 +151,36 @@ open class TaskListViewModel(
     }
 
     /**
+     * Enters or leaves pick-parent mode. While active, task search excludes
+     * [taskId] and every descendant, computed level-by-level with
+     * [TaskDao.getChildren].
+     */
+    suspend fun setPickParent(taskId: Long?) {
+        if (taskId == null) {
+            _state.update { it.copy(pickParentFor = null, pickParentExcluded = emptySet()) }
+            return
+        }
+        val excluded = mutableSetOf(taskId)
+        var frontier = listOf(taskId)
+        while (frontier.isNotEmpty()) {
+            val next = taskDao.getChildren(frontier).filterNot(excluded::contains)
+            excluded += next
+            frontier = next
+        }
+        _state.update { it.copy(pickParentFor = taskId, pickParentExcluded = excluded) }
+    }
+
+    /**
      * The filter the list query actually uses. An active search (non-blank
      * [State.searchQuery]) replaces the selected filter with a search over all
      * tasks; a blank *non-null* query deliberately means "My Tasks".
+     *
+     * Pick-parent mode is different: the selected filter stays in play and the
+     * search runs WITHIN it (see [PickSearchFilter]), so while the edit pane's
+     * panel is open, choosing another list in the drawer narrows the pick
+     * candidates to that list, and the subtree exclusion applies from the
+     * first blank query on - before the user has typed anything - so a task
+     * can never be chosen as its own ancestor.
      *
      * Callers that don't want search semantics must pass `null`. The drawer's
      * raw query string is `""`-initialised, so the UI wiring has to normalise
@@ -146,9 +190,15 @@ open class TaskListViewModel(
      * introduced by the drawer search wiring, upstream PR #4803).
      */
     internal fun queryFilterFor(queriedState: State): Filter = when {
+        queriedState.pickParentFor != null ->
+            createPickSearchFilter(
+                queriedState.filter,
+                queriedState.searchQuery.orEmpty(),
+                queriedState.pickParentExcluded,
+            )
         queriedState.searchQuery == null -> queriedState.filter
         queriedState.searchQuery.isBlank() -> MyTasksFilter(title = "My Tasks")
-        else -> createSearchFilter(queriedState.searchQuery)
+        else -> createSearchFilter(queriedState.searchQuery, queriedState.pickParentExcluded)
     }
 
     fun invalidate() {

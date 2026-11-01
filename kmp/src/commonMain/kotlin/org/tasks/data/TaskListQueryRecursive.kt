@@ -25,14 +25,18 @@ internal object TaskListQueryRecursive {
         }
         val manualSort = preferences.isManualSort
         val groupPreference = preferences.groupMode
+        // Grouping and ordering follow the list's sort identity (see
+        // Filter.sortIdentity); the WHERE clause still comes from [filter]
+        // itself (above) so SQL-narrowing wrappers keep their narrowing.
+        val sortIdentity = filter.sortIdentity
         val groupMode = when {
-            filter is CaldavFilter && (manualSort || groupPreference == SortHelper.SORT_LIST) ->
+            sortIdentity is CaldavFilter && (manualSort || groupPreference == SortHelper.SORT_LIST) ->
                 SortHelper.GROUP_NONE
             else -> groupPreference
         }
         val sortMode = when {
-            !manualSort || filter !is CaldavFilter -> preferences.sortMode
-            filter.isGoogleTasks -> SortHelper.SORT_GTASKS
+            !manualSort || sortIdentity !is CaldavFilter -> preferences.sortMode
+            sortIdentity.isGoogleTasks -> SortHelper.SORT_GTASKS
             else -> SortHelper.SORT_CALDAV
         }
         val subtaskPreference = preferences.subtaskMode

@@ -125,6 +125,14 @@ fun TaskListDrawer(
     onSearchCollapse: () -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
     searchButtonInset: Dp = 16.dp,
+    /**
+     * Shared search mode, toggled by the task list's search button. The search box is shown only
+     * while this is on. Defaults to on so standalone users (Android, previews) keep their always-
+     * visible search box.
+     */
+    searchActive: Boolean = true,
+    /** Called when this drawer's search box is closed; turns the shared search mode off. */
+    onSearchActiveChange: (Boolean) -> Unit = {},
 ) {
     // The query lives in the view model, not here. Where the sidebar is pinned to a rail the modal
     // sheet's copy of this drawer is composed alongside the sidebar's, and a local copy let the two
@@ -134,27 +142,29 @@ fun TaskListDrawer(
     // is written means clearing it clears every copy at once.
     val query = drawerState.menuQuery
 
-    // Open because this copy was asked to open it, or because there is a query to show. Both copies
-    // filter by the same query, so a copy that mounts into a search already in progress has to show
-    // the field it is filtering by rather than results with nothing to explain them.
-    var searchRequested by remember { mutableStateOf(false) }
-    val searchExpanded = searchRequested || query.isNotBlank()
-
     // Only on a close, never on mounting already closed: the sheet is composed while shut, and a
     // copy that cleared on mount wiped the search the sidebar was showing every time a task was
     // opened or closed in that width band.
     var wasOpen by remember { mutableStateOf(drawerOpen) }
     LaunchedEffect(drawerOpen) {
         if (wasOpen && !drawerOpen) {
-            searchRequested = false
             onQueryChange("")
         }
         wasOpen = drawerOpen
     }
+
+    // The shared search mode was turned off (either column can close it): drop the query so the
+    // drawer shows all items again. Same only-on-a-real-close guard as above.
+    var wasSearchActive by remember { mutableStateOf(searchActive) }
+    LaunchedEffect(searchActive) {
+        if (wasSearchActive && !searchActive) {
+            onQueryChange("")
+        }
+        wasSearchActive = searchActive
+    }
     val displayedFilters = if (query.isNotBlank()) drawerState.searchItems else drawerState.drawerItems
     val systemBarPadding = WindowInsets.systemBars.asPaddingValues()
     val bottomNavPadding = systemBarPadding.calculateBottomPadding()
-    val topGutter = systemBarPadding.calculateTopPadding() + searchButtonInset
     Column(
         modifier = Modifier
             .testTag(TestTags.NAVIGATION_DRAWER)
@@ -162,91 +172,91 @@ fun TaskListDrawer(
             .consumeWindowInsets(PaddingValues(bottom = bottomNavPadding))
             .imePadding(),
     ) {
-        SearchBar(
+        LazyColumn(
             modifier = Modifier
-                .padding(
-                    start = DrawerItemInset,
-                    end = DrawerItemInset,
-                    top = topGutter,
-                    bottom = 8.dp
-                )
-                .fillMaxWidth(),
-            text = query,
-            onTextChange = { newText ->
-                onQueryChange(newText)
-                if (newText.isNotBlank()) {
-                    onExpandDrawer()
+                .fillMaxSize()
+                .weight(1f),
+            state = listState,
+            contentPadding = PaddingValues(
+                bottom = bottomNavPadding,
+            ),
+        ) {
+            itemsIndexed(items = displayedFilters, key = { _, it -> it.key() }) { index, item ->
+                val isFirst = index == 0 ||
+                        item is DrawerItem.Header ||
+                        item is DrawerItem.SignIn
+                val isLast = index == displayedFilters.lastIndex ||
+                        displayedFilters[index + 1] is DrawerItem.Header ||
+                        displayedFilters[index + 1] is DrawerItem.SignIn
+                val cornerRadius = 16.dp
+                val shape = when {
+                    isFirst && isLast -> RoundedCornerShape(cornerRadius)
+                    isFirst -> RoundedCornerShape(
+                        topStart = cornerRadius,
+                        topEnd = cornerRadius
+                    )
+                    isLast -> RoundedCornerShape(
+                        bottomStart = cornerRadius,
+                        bottomEnd = cornerRadius
+                    )
+                    else -> RoundedCornerShape(0.dp)
                 }
-            },
-            placeHolder = stringResource(Res.string.search),
-            onCloseClicked = { onQueryChange("") },
-            onSearchClicked = {},
-        )
-        if (query.isBlank()) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                state = listState,
-                contentPadding = PaddingValues(
-                    bottom = bottomNavPadding,
-                ),
-            ) {
-                itemsIndexed(items = displayedFilters, key = { _, it -> it.key() }) { index, item ->
-                    val isFirst = index == 0 ||
-                            item is DrawerItem.Header ||
-                            item is DrawerItem.SignIn
-                    val isLast = index == displayedFilters.lastIndex ||
-                            displayedFilters[index + 1] is DrawerItem.Header ||
-                            displayedFilters[index + 1] is DrawerItem.SignIn
-                    val cornerRadius = 16.dp
-                    val shape = when {
-                        isFirst && isLast -> RoundedCornerShape(cornerRadius)
-                        isFirst -> RoundedCornerShape(
-                            topStart = cornerRadius,
-                            topEnd = cornerRadius
+                Surface(
+                    modifier = Modifier
+                        .padding(
+                            start = DrawerItemInset,
+                            end = DrawerItemInset,
+                            top = if (isFirst && index > 0) 8.dp else 0.dp,
+                        ),
+                    shape = shape,
+                    color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                ) {
+                    when (item) {
+                        is DrawerItem.Filter -> FilterItem(
+                            item = item,
+                            expanded = expanded,
+                            onClick = { onClick(item) }
                         )
-                        isLast -> RoundedCornerShape(
-                            bottomStart = cornerRadius,
-                            bottomEnd = cornerRadius
+                        is DrawerItem.Header -> HeaderItem(
+                            item = item,
+                            expanded = expanded,
+                            toggleCollapsed = { onClick(item) },
+                            onAddClick = { onAddClick(item) },
+                            onExpandDrawer = onExpandDrawer,
+                            onErrorClick = onErrorClick,
                         )
-                        else -> RoundedCornerShape(0.dp)
-                    }
-                    Surface(
-                        modifier = Modifier
-                            .padding(
-                                start = DrawerItemInset,
-                                end = DrawerItemInset,
-                                top = if (isFirst && index > 0) 8.dp else 0.dp,
-                            ),
-                        shape = shape,
-                        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-                    ) {
-                        when (item) {
-                            is DrawerItem.Filter -> FilterItem(
-                                item = item,
-                                expanded = expanded,
-                                onClick = { onClick(item) }
-                            )
-                            is DrawerItem.Header -> HeaderItem(
-                                item = item,
-                                expanded = expanded,
-                                toggleCollapsed = { onClick(item) },
-                                onAddClick = { onAddClick(item) },
-                                onExpandDrawer = onExpandDrawer,
-                                onErrorClick = onErrorClick,
-                            )
-                            is DrawerItem.SignIn -> SignInItem(
-                                expanded = expanded,
-                                onClick = onSignIn,
-                                onExpandDrawer = onExpandDrawer,
-                            )
-                        }
+                        is DrawerItem.SignIn -> SignInItem(
+                            expanded = expanded,
+                            onClick = onSignIn,
+                            onExpandDrawer = onExpandDrawer,
+            )
                     }
                 }
             }
         }
+        // The search box is part of the shared search mode toggled by the task list's search
+        // button. It is shown only while that mode is on and the drawer is wide enough for it:
+        // triggering search must never change the drawer's expand/collapse state, so in rail mode
+        // the box is simply not shown rather than expanding the drawer.
+        if (searchActive && expanded) {
+            SearchBar(
+                modifier = Modifier
+                    .padding(
+                        start = DrawerItemInset,
+                        end = DrawerItemInset,
+                        top = 8.dp,
+                        bottom = bottomNavPadding + 8.dp
+                    )
+                    .fillMaxWidth(),
+                text = query,
+                onTextChange = { onQueryChange(it) },
+                placeHolder = stringResource(Res.string.search),
+                onCloseClicked = { onSearchActiveChange(false) },
+                onSearchClicked = { _ -> },
+            )
+        }
     }
 }
-
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

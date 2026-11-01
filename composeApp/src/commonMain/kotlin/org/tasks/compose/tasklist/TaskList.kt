@@ -77,12 +77,16 @@ internal fun TaskList(
     onTaskDrop: (taskId: Long, dropIndex: Int) -> Unit = { _, _ -> },
     onTaskReparent: (taskId: Long, targetTaskId: Long) -> Unit = { _, _ -> },
     onTaskOutdent: (taskId: Long, dropIndex: Int) -> Unit = { _, _ -> },
+    bottomPadding: Dp = 88.dp,
     onTaskClick: (TaskContainer) -> Unit,
     onCompleteTask: (TaskContainer, Boolean) -> Unit,
     onToggleGroup: (Long) -> Unit = {},
     onToggleSubtasks: (Long, Boolean) -> Unit = { _, _ -> },
     onFilterClick: (Filter) -> Unit = {},
     is24Hour: Boolean = false,
+    // The move-into panel's picked destination row, highlighted while the
+    // panel is open. Null outside that flow, so rows render exactly as before.
+    highlightedTaskId: Long? = null,
 ) {
     val dateFormatter = rememberDateFormatter(is24Hour)
     val subtaskTrees = koinInject<SubtaskTreeRegistry>()
@@ -281,7 +285,9 @@ internal fun TaskList(
         state = listState,
         contentPadding = PaddingValues(
             top = topPadding,
-            bottom = 88.dp, // floating toolbar clearance
+            // Floating toolbar clearance; the caller adds the bottom search bar's height when it
+            // is open, since the toolbar is pushed above the search bar.
+            bottom = bottomPadding,
         ),
     ) {
         items(
@@ -318,6 +324,7 @@ internal fun TaskList(
                     onToggleComplete = { onCompleteTask(task, !task.isCompleted) },
                     onToggleSubtasks = { onToggleSubtasks(task.id, !task.isCollapsed) },
                     onFilterClick = onFilterClick,
+                    highlighted = highlightedTaskId != null && task.id == highlightedTaskId,
                     descriptionExpanded = expandedDescriptions[subtaskKey(task.id, task.task.remoteId)]
                             ?: rowStyle.showFullDescription,
                     onToggleDescriptionExpanded = {
@@ -427,6 +434,7 @@ internal fun TaskList(
                         onToggleComplete = { onCompleteTask(task, !task.isCompleted) },
                         onToggleSubtasks = { onToggleSubtasks(task.id, !task.isCollapsed) },
                         onFilterClick = onFilterClick,
+                        highlighted = highlightedTaskId != null && task.id == highlightedTaskId,
                         descriptionExpanded = expandedDescriptions[subtaskKey(task.id, task.task.remoteId)]
                                 ?: rowStyle.showFullDescription,
                         onToggleDescriptionExpanded = {
