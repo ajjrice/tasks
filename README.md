@@ -1,4 +1,3 @@
-(paste at the TOP of ajjrice/tasks README, above the upstream content)
 
 > ## 🛠️ Unofficial community fork — preview builds
 >
