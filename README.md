@@ -1,3 +1,30 @@
+(paste at the TOP of ajjrice/tasks README, above the upstream content)
+
+> ## 🛠️ Unofficial community fork — preview builds
+>
+> This is **Alex Rice's fork** of [tasks.org](https://github.com/tasks-org/tasks-org),
+> hosting a set of PRs that add **desktop features** (Windows / macOS / Linux, via the
+> Kotlin Multiplatform `composeApp`):
+>
+> - **Search in the task list** (with drawer search + search-restore) — PR #4803 + fix
+> - **Make a task a parent** / "Move into new task" — PR #4820
+> - **Move to other task** — pick a task, drag it into another task's subtree
+> - **Bottom search bar + shared-search toggle**
+> - **Drag-reparenting, my-order sorting, filter editor, settings panes, MCP server** —
+>   full list on the [Releases page](https://github.com/ajjrice/tasks/releases)
+>
+> **Why this fork exists:** the PRs are waiting on review, and this gives anyone a way to
+> *try the features now* and **report bugs before the PRs merge**.
+>
+> 📥 **Download prebuilt apps:** [Releases page →](https://github.com/ajjrice/tasks/releases)
+>
+> ⚠️ **Unofficial builds.** Not endorsed by or affiliated with the upstream project or its
+> maintainer. Signed with an unofficial key (see each release's notes). Builds are retired
+> once the PRs land upstream — or sooner, if the maintainer asks.
+>
+> 🐞 **Found a bug? File an [issue](https://github.com/ajjrice/tasks/issues)** on this repo
+> (or on the specific PR) — that feedback is exactly what makes these PRs merge-ready.
+
 Astrid was a popular cross-platform productivity service that was [acquired](https://web.archive.org/web/20130811052500/http://blog.astrid.com/blog/2013/05/01/yahoo-acquires-astrid/) and [discontinued](https://techcrunch.com/2013/07/06/astrid-goes-dark-august-5-goodnight-sweet-squid/) in 2013. The source code from Astrid's open source Android app serves as the basis of Tasks.
 
 [<img src="https://play.google.com/intl/en_us/badges/images/generic/en_badge_web_generic.png"
